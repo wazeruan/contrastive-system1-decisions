@@ -60,7 +60,7 @@ To queue the full seed-42 baseline in one command, enter the Hugging Face token 
 
 ```bash
 HF_TOKEN="$(python3 -c 'import getpass; print(getpass.getpass("Hugging Face token: "))')" \
-  ./scripts/run_pipeline.sh --account def-denilson
+  ./scripts/run_pipeline.sh --account YOUR_SLURM_ACCOUNT
 ```
 
 The command prints each job ID, receipt, and resolved run directory. It queues the dependent jobs; Slurm starts each only after its prerequisites succeed. Add `--env-script PATH` if Python/uv setup must be loaded on the cluster. Use `--help` to see optional project, config, partition, and GPU resource overrides.
