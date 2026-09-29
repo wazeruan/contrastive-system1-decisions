@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-STAGE="" ACCOUNT="" PARTITION="" GPU_RESOURCE="" CONFIG="" DATA_DIR="" INPUT_JSON=""
+STAGE="" ACCOUNT="" PARTITION="" GPU_RESOURCE="" GPU_COUNT=0 CONFIG="" DATA_DIR="" INPUT_JSON=""
 OUTPUT_DIR="" OUTPUT_DIR_SET=0 CHECKPOINT="" DATA_PATH="" CALIBRATION="" CATEGORY="" REVISION="main"
 ENV_SCRIPT=""
 BM25_NEGATIVES=0 RESUME=0 CPUS="" MEMORY="" WALL_TIME="" STARTUP_TIMEOUT=180 MIN_FREE_GIB=15
@@ -10,14 +10,15 @@ DEPENDENCY=""
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/submit.sh --stage STAGE --account ACCOUNT --partition PARTITION [options]
+Usage: scripts/submit.sh --stage STAGE --account ACCOUNT [options]
 
 Stages: setup, prepare-xlam, prepare-bfcl, prepare-model, preflight, train, calibrate, evaluate, benchmark
 
-Common: --project-dir PATH --env-script PATH --gpu-resource SPEC --cpus-per-task N --memory SIZE --time D-HH:MM:SS
+Common: --project-dir PATH --env-script PATH --partition NAME --gpu-resource SPEC
+        --cpus-per-task N --memory SIZE --time D-HH:MM:SS
         --output-dir PATH --dependency JOB_ID --startup-timeout-seconds N --min-free-gib N --help
-        --gpu-resource is required for preflight/train/calibrate/evaluate/benchmark. Example Slurm syntax
-        only: gpu:h100:1; confirm your cluster's syntax before using it.
+        By default, Slurm uses the cluster's default partition. GPU stages request one GPU with
+        --gpus-per-node=1; --partition and --gpu-resource are optional cluster-specific overrides.
 
 Stage options:
   prepare-xlam:  [--input-json PATH] [--bm25-negatives N]
@@ -76,7 +77,7 @@ export CSD_MODEL_CACHE_MANIFEST="$MODEL_MANIFEST"
 
 [[ -n "$STAGE" ]] || die "--stage is required"
 [[ -n "$ACCOUNT" && "$ACCOUNT" =~ ^[[:alnum:]_.-]+$ ]] || die "valid --account is required"
-[[ -n "$PARTITION" && "$PARTITION" =~ ^[[:alnum:]_.-]+$ ]] || die "valid --partition is required"
+[[ -z "$PARTITION" || "$PARTITION" =~ ^[[:alnum:]_.-]+$ ]] || die "invalid --partition"
 [[ "$STARTUP_TIMEOUT" =~ ^[0-9]+$ ]] && (( STARTUP_TIMEOUT >= 10 && STARTUP_TIMEOUT <= 1800 )) || die "startup timeout must be 10..1800 seconds"
 [[ "$MIN_FREE_GIB" =~ ^[0-9]+$ ]] && (( MIN_FREE_GIB >= 1 && MIN_FREE_GIB <= 100000 )) || die "minimum free space must be 1..100000 GiB"
 [[ "$BM25_NEGATIVES" =~ ^[0-9]+$ ]] && (( BM25_NEGATIVES <= 100 )) || die "BM25 negative count must be 0..100"
@@ -102,11 +103,12 @@ case "$STAGE" in
     CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-24G}"; WALL_TIME="${WALL_TIME:-01:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/model-cache-$(basename "${CONFIG%.json}")" ;;
   preflight)
-    [[ -n "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "preflight requires --gpu-resource and cannot resume"
+    [[ "$RESUME" == 0 ]] || die "preflight cannot resume"
+    GPU_COUNT=1
     CPUS="${CPUS:-2}"; MEMORY="${MEMORY:-8G}"; WALL_TIME="${WALL_TIME:-00:10:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/preflight" ;;
   train)
-    [[ -n "$GPU_RESOURCE" ]] || die "train needs --gpu-resource"
+    GPU_COUNT=1
     [[ "$RESUME" == 0 || -z "$DEPENDENCY" ]] || die "resume cannot use --dependency"
     [[ -n "$CONFIG" && -f "$CONFIG" ]] || die "train needs an existing --config"
     [[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] || die "train needs an existing --data-dir"
@@ -116,14 +118,14 @@ case "$STAGE" in
     CPUS="${CPUS:-8}"; MEMORY="${MEMORY:-64G}"; WALL_TIME="${WALL_TIME:-12:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/$(basename "${CONFIG%.json}")-seed42" ;;
   calibrate)
-    [[ -n "$GPU_RESOURCE" ]] || die "calibrate needs --gpu-resource"
+    GPU_COUNT=1
     [[ "$RESUME" == 0 ]] || die "calibrate does not support resume"
     [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "calibrate needs an existing --checkpoint, or --dependency"
     [[ -n "$DATA_PATH" && ( -f "$DATA_PATH" || -n "$DEPENDENCY" ) ]] || die "calibrate needs an existing --data file, or --dependency"
     CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/calibration" ;;
   evaluate)
-    [[ -n "$GPU_RESOURCE" ]] || die "evaluate needs --gpu-resource"
+    GPU_COUNT=1
     [[ "$RESUME" == 0 ]] || die "evaluate does not support resume"
     [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "evaluate needs an existing --checkpoint, or --dependency"
     [[ -n "$DATA_PATH" && ( -f "$DATA_PATH" || -n "$DEPENDENCY" ) ]] || die "evaluate needs an existing --data file, or --dependency"
@@ -131,7 +133,7 @@ case "$STAGE" in
     CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/evaluation" ;;
   benchmark)
-    [[ -n "$GPU_RESOURCE" ]] || die "benchmark needs --gpu-resource"
+    GPU_COUNT=1
     [[ "$RESUME" == 0 ]] || die "benchmark does not support resume"
     [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "benchmark needs an existing --checkpoint, or --dependency"
     [[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] || die "benchmark needs an existing --data-dir"
@@ -262,17 +264,19 @@ case "$STAGE" in
 esac
 [[ -f "$SBATCH_SCRIPT" ]] || die "missing Slurm entry point: $SBATCH_SCRIPT"
 
-COMMAND_JSON="$(python3 - "$STAGE" "$PROJECT_DIR" "$ACCOUNT" "$PARTITION" "$GPU_RESOURCE" "$CPUS" "$MEMORY" "$WALL_TIME" "$DEPENDENCY" "$CONFIG" "$DATA_DIR" "$INPUT_JSON" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CATEGORY" "$CALIBRATION" "$BM25_NEGATIVES" "$REVISION" "$RESUME" "$ENV_SCRIPT" "$MODEL_MANIFEST" <<'PY'
+COMMAND_JSON="$(python3 - "$STAGE" "$PROJECT_DIR" "$ACCOUNT" "$PARTITION" "$GPU_RESOURCE" "$GPU_COUNT" "$CPUS" "$MEMORY" "$WALL_TIME" "$DEPENDENCY" "$CONFIG" "$DATA_DIR" "$INPUT_JSON" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CATEGORY" "$CALIBRATION" "$BM25_NEGATIVES" "$REVISION" "$RESUME" "$ENV_SCRIPT" "$MODEL_MANIFEST" <<'PY'
 import json, sys
-(stage, project, account, partition, gpu, cpus, memory, wall, dependency, config,
+(stage, project, account, partition, gpu, gpu_count, cpus, memory, wall, dependency, config,
  data_dir, input_json, output_dir, checkpoint, data, category, calibration,
  bm25, revision, resume, environment_script, model_manifest) = sys.argv[1:]
+gpu_count = int(gpu_count)
 print(json.dumps({
     "stage": stage,
     "project_dir": project,
     "environment_script": environment_script or None,
     "model_cache_manifest": model_manifest,
-    "sbatch": {"account": account, "partition": partition, "gpu_resource": gpu or None,
+    "sbatch": {"account": account, "partition": partition or None, "gpu_resource": gpu or None,
+               "gpus_per_node": gpu_count if gpu_count and not gpu else None,
                "cpus_per_task": cpus, "memory": memory, "time": wall,
                "afterok_job_id": dependency or None},
     "arguments": {"config": config or None, "data_dir": data_dir or None,
@@ -288,10 +292,15 @@ python3 "$PROJECT_DIR/scripts/receipt.py" init --path "$RECEIPT" --token "$TOKEN
   --submitted-at "$STAMP" --project-dir "$PROJECT_DIR" --run-dir "$RUN_DIR" \
   --command-json "$COMMAND_JSON" --log-out "$LOG_OUT" --log-err "$LOG_ERR"
 
-sbatch_args=(--parsable --comment "csd:$TOKEN" --account "$ACCOUNT" --partition "$PARTITION"
+sbatch_args=(--parsable --comment "csd:$TOKEN" --account "$ACCOUNT"
   --cpus-per-task "$CPUS" --mem "$MEMORY" --time "$WALL_TIME" --chdir "$PROJECT_DIR"
   --output "$LOG_OUT" --error "$LOG_ERR" --export=ALL)
-[[ -z "$GPU_RESOURCE" ]] || sbatch_args+=(--gres="$GPU_RESOURCE")
+[[ -z "$PARTITION" ]] || sbatch_args+=(--partition "$PARTITION")
+if [[ -n "$GPU_RESOURCE" ]]; then
+  sbatch_args+=(--gres="$GPU_RESOURCE")
+elif (( GPU_COUNT > 0 )); then
+  sbatch_args+=(--gpus-per-node="$GPU_COUNT")
+fi
 [[ -z "$DEPENDENCY" ]] || sbatch_args+=(--dependency="afterok:${DEPENDENCY//,/:}")
 [[ "$STAGE" != train ]] || sbatch_args+=(--signal=B:USR1@300)
 case "$STAGE" in

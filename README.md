@@ -54,43 +54,43 @@ This is an SSH-first, headless project. No GUI or notebook is required. Place th
 uv sync
 ```
 
-After accepting the gated xLAM conditions and logging in to Hugging Face, set up the environment in a CPU allocation, then prepare data in separate CPU jobs. The Slurm account, CPU/GPU partitions, and exact GPU request syntax are site-specific, so supply them at launch:
+After accepting the gated xLAM conditions and logging in to Hugging Face, set up the environment in a CPU allocation, then prepare data in separate CPU jobs. Supply `--account`; the wrapper uses the cluster's default partition when `--partition` is omitted. GPU stages request one GPU with Slurm's `--gpus-per-node=1`. The preflight checks that the allocation is an H100 with at least 75 GiB and BF16 support before model work starts. If the default partition does not provide that GPU, override it with the cluster's H100 partition and, if needed, its GPU resource syntax using `--partition` and `--gpu-resource`.
 
 ```bash
-./scripts/submit.sh --stage setup --account "$SLURM_ACCOUNT" --partition "$CPU_PARTITION"
-./scripts/submit.sh --stage prepare-xlam --account "$SLURM_ACCOUNT" --partition "$CPU_PARTITION" \
+./scripts/submit.sh --stage setup --account "$SLURM_ACCOUNT"
+./scripts/submit.sh --stage prepare-xlam --account "$SLURM_ACCOUNT" \
   --dependency SETUP_JOB_ID --bm25-negatives 0
-./scripts/submit.sh --stage prepare-bfcl --account "$SLURM_ACCOUNT" --partition "$CPU_PARTITION" \
+./scripts/submit.sh --stage prepare-bfcl --account "$SLURM_ACCOUNT" \
   --dependency SETUP_JOB_ID
-./scripts/submit.sh --stage prepare-model --account "$SLURM_ACCOUNT" --partition "$CPU_PARTITION" \
+./scripts/submit.sh --stage prepare-model --account "$SLURM_ACCOUNT" \
   --config configs/shared-heads-h100.json --dependency SETUP_JOB_ID
 ```
 
-Replace the uppercase placeholders with the cluster's confirmed values and each preceding command's printed `JOB_ID`. `prepare-model` downloads the pinned DeBERTa weights in a CPU allocation; GPU jobs then run with Hugging Face offline mode and require the matching cache manifest. If the cluster exposes Python/uv through modules, provide a shared shell setup file with `--env-script PATH`; it is sourced on the submit and compute nodes. For model stages, also pass the confirmed GPU resource syntax, for example `--gpu-resource 'gpu:h100:1'` only if your Slurm site uses that form. Run `--stage preflight` after setup to confirm the actual H100 allocation before a long training job. `HF_TOKEN` may be present in the submitting environment for the gated xLAM download; the wrapper forwards the environment without printing the token. Never put it in a command line, config file, Slurm log, or Git. You must accept the dataset conditions yourself. The BFCL snapshot is public and Apache-2.0 licensed.
+Replace job ID placeholders with the preceding command's printed `JOB_ID`. `prepare-model` downloads the pinned DeBERTa weights in a CPU allocation; GPU jobs then run with Hugging Face offline mode and require the matching cache manifest. If the cluster exposes Python/uv through modules, provide a shared shell setup file with `--env-script PATH`; it is sourced on the submit and compute nodes. Run `--stage preflight` after setup to confirm the default queue grants the required H100 before a long training job. `HF_TOKEN` may be present in the submitting environment for the gated xLAM download; the wrapper forwards the environment without printing the token. Never put it in a command line, config file, Slurm log, or Git. You must accept the dataset conditions yourself. The BFCL snapshot is public and Apache-2.0 licensed.
 
 ## Train and evaluate
 
 Once setup and data jobs have completed, run the three architecture variants. Each run directory is claimed atomically; if a requested name exists, the wrapper uses the next numeric suffix. Use `--dependency JOB_ID` to connect stages with `afterok` semantics when an input is still being produced by another Slurm job.
 
 ```bash
-./scripts/submit.sh --stage preflight --account "$SLURM_ACCOUNT" --partition "$H100_PARTITION" \
-  --gpu-resource "$H100_GPU_REQUEST" --dependency MODEL_CACHE_JOB_ID
+./scripts/submit.sh --stage preflight --account "$SLURM_ACCOUNT" \
+  --dependency MODEL_CACHE_JOB_ID
 
-./scripts/submit.sh --stage train --account "$SLURM_ACCOUNT" --partition "$H100_PARTITION" \
-  --gpu-resource "$H100_GPU_REQUEST" --config configs/shared-heads-h100.json \
+./scripts/submit.sh --stage train --account "$SLURM_ACCOUNT" \
+  --config configs/shared-heads-h100.json \
   --data-dir XLAM_RUN_DIR --dependency MODEL_CACHE_JOB_ID,XLAM_JOB_ID
 
-./scripts/submit.sh --stage calibrate --account "$SLURM_ACCOUNT" --partition "$H100_PARTITION" \
-  --gpu-resource "$H100_GPU_REQUEST" --checkpoint RUN_DIR/checkpoints/best.pt \
+./scripts/submit.sh --stage calibrate --account "$SLURM_ACCOUNT" \
+  --checkpoint RUN_DIR/checkpoints/best.pt \
   --data XLAM_RUN_DIR/calibration.jsonl --dependency TRAIN_JOB_ID
 
-./scripts/submit.sh --stage evaluate --account "$SLURM_ACCOUNT" --partition "$H100_PARTITION" \
-  --gpu-resource "$H100_GPU_REQUEST" --checkpoint RUN_DIR/checkpoints/best.pt \
+./scripts/submit.sh --stage evaluate --account "$SLURM_ACCOUNT" \
+  --checkpoint RUN_DIR/checkpoints/best.pt \
   --data XLAM_RUN_DIR/test.jsonl --calibration CALIBRATION_RUN_DIR/calibration.json \
   --dependency CALIBRATION_JOB_ID
 
-./scripts/submit.sh --stage benchmark --account "$SLURM_ACCOUNT" --partition "$H100_PARTITION" \
-  --gpu-resource "$H100_GPU_REQUEST" --checkpoint RUN_DIR/checkpoints/best.pt \
+./scripts/submit.sh --stage benchmark --account "$SLURM_ACCOUNT" \
+  --checkpoint RUN_DIR/checkpoints/best.pt \
   --data-dir BFCL_DATA_DIR --category live_multiple --dependency BFCL_PREP_JOB_ID
 ```
 
