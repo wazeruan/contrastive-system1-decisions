@@ -372,6 +372,25 @@ show_failure_logs() {
   fi
 }
 
+receipt_confirms_started_success() {
+  python3 - "$RECEIPT" "$JOB_ID" <<'PY'
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+started = value.get("application_start") if isinstance(value, dict) else None
+ok = (
+    isinstance(value, dict)
+    and value.get("state") == "SUCCEEDED"
+    and isinstance(started, dict)
+    and started.get("state") == "STARTED"
+    and str(started.get("job_id")) == sys.argv[2]
+)
+raise SystemExit(0 if ok else 1)
+PY
+}
+
 running_seen=0 query_failures=0
 deadline=$(( $(date +%s) + STARTUP_TIMEOUT ))
 while (( $(date +%s) < deadline )); do
@@ -402,6 +421,17 @@ while (( $(date +%s) < deadline )); do
         acct_state="${acct_line%%|*}"; acct_state="${acct_state%%+}"
         case "$acct_state" in
           COMPLETED|FAILED|CANCELLED|TIMEOUT|PREEMPTED|OUT_OF_MEMORY|NODE_FAIL|BOOT_FAIL|DEADLINE|REVOKED|SPECIAL_EXIT)
+            # Slurm accounting can publish a very short job's terminal state
+            # before the shared STARTED marker and final receipt become visible
+            # to this login process. Give the batch EXIT trap a bounded moment
+            # to persist its marker-backed success before classifying it.
+            if [[ ! -f "$START_MARKER" && "$acct_state" == COMPLETED && "${acct_line#*|}" == "0:0" ]]; then
+              for _ in {1..10}; do
+                [[ -f "$START_MARKER" ]] && break
+                receipt_confirms_started_success && break
+                sleep 1
+              done
+            fi
             if [[ -f "$START_MARKER" ]]; then
               scheduler_state=FAILED
               if [[ "$acct_state" == COMPLETED && "${acct_line#*|}" == "0:0" ]]; then scheduler_state=SUCCEEDED; fi
@@ -425,7 +455,13 @@ PY
               show_failure_logs
               exit 1
             fi
-            python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state FAILED --job-id "$JOB_ID" --reason "terminal Slurm state $acct_line before STARTED"
+            terminal_receipt_state="$(python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" \
+              --state FAILED --job-id "$JOB_ID" --reason "terminal Slurm state $acct_line before STARTED" \
+              --if-nonterminal --print-state)"
+            if [[ "$terminal_receipt_state" == SUCCEEDED ]] && receipt_confirms_started_success; then
+              echo "Job completed during startup monitoring; state: SUCCEEDED; Slurm state: $acct_line. Receipt: $RECEIPT"
+              exit 0
+            fi
             echo "Failed before application startup ($acct_line). Receipt: $RECEIPT" >&2
             show_failure_logs
             exit 1 ;;
