@@ -65,6 +65,8 @@ HF_TOKEN="$(python3 -c 'import getpass; print(getpass.getpass("Hugging Face toke
 
 The command prints each job ID, receipt, and resolved run directory. It queues the dependent jobs; Slurm starts each only after its prerequisites succeed. Add `--env-script PATH` if Python/uv setup must be loaded on the cluster. Use `--help` to see optional project, config, partition, and GPU resource overrides.
 
+The pipeline uses a short, bounded startup check for each submission so it can queue the complete dependency chain promptly. A stage reported as pending remains queued; downstream stages wait through `afterok` dependencies. Training depends on the H100 preflight, which already depends on model preparation.
+
 If xLAM preparation completed but the pipeline wrapper stopped before submitting later stages, continue without downloading xLAM again. Supply the successful setup/xLAM job IDs and the existing prepared-data directory. The continuation refreshes the environment from the current lockfile. If BFCL preparation also completed, pass its job ID and directory to reuse it:
 
 ```bash
@@ -75,6 +77,18 @@ If xLAM preparation completed but the pipeline wrapper stopped before submitting
 ```
 
 The BFCL arguments are optional as a pair. The continuation validates completed Slurm states and prepared data, then submits any missing data/model preparation, H100 preflight, training, calibration, and evaluations with `afterok` dependencies.
+
+If model preparation and H100 preflight have already been submitted, resume at training and reuse those jobs instead of submitting them again:
+
+```bash
+./scripts/run_pipeline.sh --account YOUR_SLURM_ACCOUNT --resume-after-preflight \
+  --setup-job-id SETUP_JOB_ID --xlam-job-id XLAM_JOB_ID \
+  --xlam-dir data/processed/xlam \
+  --bfcl-job-id BFCL_JOB_ID --bfcl-dir data/benchmark/bfcl \
+  --model-job-id MODEL_JOB_ID --preflight-job-id PREFLIGHT_JOB_ID
+```
+
+This mode verifies the existing setup, data, model, and preflight jobs. It reuses a pending/running preflight as the training dependency and also gates on model preparation if that job is still active. If both jobs completed successfully, it submits training without expired dependency IDs. Use this only when no training job was accepted in the previous attempt.
 
 For manual stage-by-stage control, submit the stages below. `HF_TOKEN` is needed only for the xLAM preparation command.
 

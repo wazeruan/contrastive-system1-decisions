@@ -7,6 +7,7 @@ ACCOUNT="" PARTITION="" GPU_RESOURCE="" ENV_SCRIPT=""
 CONFIG="" CONFIG_SET=0
 CONTINUE_AFTER_XLAM=0 EXISTING_SETUP_JOB_ID="" EXISTING_XLAM_JOB_ID="" EXISTING_XLAM_DIR=""
 EXISTING_BFCL_JOB_ID="" EXISTING_BFCL_DIR=""
+RESUME_AFTER_PREFLIGHT=0 EXISTING_MODEL_JOB_ID="" EXISTING_PREFLIGHT_JOB_ID=""
 
 usage() {
   cat <<'USAGE'
@@ -24,6 +25,10 @@ To continue after an already completed xLAM preparation, pass
 --continue-after-xlam, --setup-job-id, --xlam-job-id, and --xlam-dir. The script
 validates the prepared files, refreshes the Python environment, and resumes with
 BFCL/model preparation. Add --bfcl-job-id and --bfcl-dir to reuse completed BFCL data.
+To resume after model preparation and H100 preflight, add --resume-after-preflight,
+--model-job-id, and --preflight-job-id. This mode also requires the completed
+BFCL data so no earlier pipeline stage needs to be submitted again. Use it only
+when no training job was accepted in the previous attempt.
 
 Options:
   --account ACCOUNT       Required Slurm account
@@ -38,6 +43,9 @@ Options:
   --xlam-dir PATH         Existing xLAM dataset directory required by --continue-after-xlam
   --bfcl-job-id ID        Optional successful BFCL preparation job to reuse
   --bfcl-dir PATH         Existing BFCL data directory required with --bfcl-job-id
+  --resume-after-preflight Reuse existing model/preflight jobs and resume at training
+  --model-job-id ID       Existing active or successful model preparation job
+  --preflight-job-id ID   Existing active or successful H100 preflight job
   --help                  Show this help
 
 The default config is the shared-heads seed-42 baseline. The pipeline submits
@@ -49,7 +57,7 @@ die() { echo "run_pipeline: $*" >&2; exit 2; }
 
 while (($#)); do
   case "$1" in
-    --account|--project-dir|--config|--env-script|--partition|--gpu-resource|--setup-job-id|--xlam-job-id|--xlam-dir|--bfcl-job-id|--bfcl-dir)
+    --account|--project-dir|--config|--env-script|--partition|--gpu-resource|--setup-job-id|--xlam-job-id|--xlam-dir|--bfcl-job-id|--bfcl-dir|--model-job-id|--preflight-job-id)
       (($# >= 2)) || die "$1 needs a value"
       key="$1"; value="$2"; shift 2
       case "$key" in
@@ -64,9 +72,12 @@ while (($#)); do
         --xlam-dir) EXISTING_XLAM_DIR="$value" ;;
         --bfcl-job-id) EXISTING_BFCL_JOB_ID="$value" ;;
         --bfcl-dir) EXISTING_BFCL_DIR="$value" ;;
+        --model-job-id) EXISTING_MODEL_JOB_ID="$value" ;;
+        --preflight-job-id) EXISTING_PREFLIGHT_JOB_ID="$value" ;;
       esac
       ;;
     --continue-after-xlam) CONTINUE_AFTER_XLAM=1; shift ;;
+    --resume-after-preflight) RESUME_AFTER_PREFLIGHT=1; CONTINUE_AFTER_XLAM=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -88,6 +99,14 @@ else
     die "provide both --bfcl-job-id (numeric) and --bfcl-dir, or neither"
   unset HF_TOKEN
 fi
+if [[ "$RESUME_AFTER_PREFLIGHT" == 1 ]]; then
+  [[ "$EXISTING_MODEL_JOB_ID" =~ ^[0-9]+$ ]] || die "--resume-after-preflight requires numeric --model-job-id"
+  [[ "$EXISTING_PREFLIGHT_JOB_ID" =~ ^[0-9]+$ ]] || die "--resume-after-preflight requires numeric --preflight-job-id"
+  [[ "$EXISTING_BFCL_JOB_ID" =~ ^[0-9]+$ && -n "$EXISTING_BFCL_DIR" ]] || \
+    die "--resume-after-preflight requires --bfcl-job-id and --bfcl-dir so benchmark data can be reused"
+elif [[ -n "$EXISTING_MODEL_JOB_ID$EXISTING_PREFLIGHT_JOB_ID" ]]; then
+  die "--model-job-id and --preflight-job-id require --resume-after-preflight"
+fi
 
 PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || die "project directory does not exist"
 [[ -f "$PROJECT_DIR/scripts/submit.sh" && -f "$PROJECT_DIR/pyproject.toml" ]] || die "not a project checkout"
@@ -108,8 +127,12 @@ if [[ -n "$ENV_SCRIPT" ]]; then base_args+=(--env-script "$ENV_SCRIPT"); fi
 if [[ -n "$PARTITION" ]]; then base_args+=(--partition "$PARTITION"); fi
 
 LAST_JOB_ID="" LAST_RUN_DIR="" LAST_RECEIPT="" UNVERIFIED_STAGES=""
-SETUP_DEPENDENCY="" XLAM_DEPENDENCY="" BFCL_DEPENDENCY=""
+SETUP_DEPENDENCY="" XLAM_DEPENDENCY="" BFCL_DEPENDENCY="" MODEL_DEPENDENCY="" PREFLIGHT_DEPENDENCY=""
 BFCL_JOB_ID="" BFCL_DIR=""
+# Keep each startup observation bounded so the full afterok graph is submitted
+# promptly. Slurm may reject dependencies on successful jobs after MinJobAge.
+PIPELINE_STARTUP_TIMEOUT=30
+base_args+=(--startup-timeout-seconds "$PIPELINE_STARTUP_TIMEOUT")
 submit_stage() {
   local label="$1" output rc line receipt_state=""
   shift
@@ -175,6 +198,30 @@ verify_completed_job() {
   [[ "$state" == COMPLETED && "$exit_code" == "0:0" ]] || \
     die "$label job $job_id is not confirmed successful (sacct: ${compact:-no record})"
   echo "Verified $label job $job_id completed successfully."
+}
+
+verify_active_or_completed_job() {
+  local label="$1" job_id="$2" queue_output acct_output compact state exit_code
+  if ! queue_output="$(squeue -h -j "$job_id" -o '%T|%R' 2>&1)"; then
+    die "could not verify $label job $job_id with squeue: $queue_output"
+  fi
+  if [[ -n "$queue_output" ]]; then
+    JOB_DISPOSITION=ACTIVE
+    echo "Verified $label job $job_id is still queued or running ($queue_output)."
+    return
+  fi
+  if ! acct_output="$(sacct --parsable2 -n -X -j "$job_id" --format=State,ExitCode 2>&1)"; then
+    die "could not verify $label job $job_id with sacct: $acct_output"
+  fi
+  compact="$(printf '%s\n' "$acct_output" | head -n 1 | tr -d '[:space:]')"
+  IFS='|' read -r state exit_code <<< "$compact"
+  state="${state%%+}"
+  if [[ "$state" == COMPLETED && "$exit_code" == "0:0" ]]; then
+    JOB_DISPOSITION=COMPLETED
+    echo "Verified $label job $job_id completed successfully."
+    return
+  fi
+  die "$label job $job_id is neither active nor successfully completed (sacct: ${compact:-no record})"
 }
 
 echo "Queueing the baseline pipeline under account $ACCOUNT."
@@ -273,10 +320,12 @@ for category in ("multiple", "live_multiple"):
 PY
     echo "Reusing BFCL data $BFCL_DIR from job $BFCL_JOB_ID."
   fi
-  echo "Reusing prepared xLAM data $XLAM_DIR. Refreshing the environment from the current lockfile."
-  submit_stage setup "$SUBMIT" "${base_args[@]}" --stage setup
-  SETUP_JOB_ID="$LAST_JOB_ID"
-  SETUP_DEPENDENCY="$SETUP_JOB_ID"
+  if [[ "$RESUME_AFTER_PREFLIGHT" == 0 ]]; then
+    echo "Reusing prepared xLAM data $XLAM_DIR. Refreshing the environment from the current lockfile."
+    submit_stage setup "$SUBMIT" "${base_args[@]}" --stage setup
+    SETUP_JOB_ID="$LAST_JOB_ID"
+    SETUP_DEPENDENCY="$SETUP_JOB_ID"
+  fi
 else
   submit_stage setup "$SUBMIT" "${base_args[@]}" --stage setup
   SETUP_JOB_ID="$LAST_JOB_ID"
@@ -290,31 +339,53 @@ else
   unset HF_TOKEN
 fi
 
-if [[ -z "$BFCL_JOB_ID" ]]; then
-  if [[ -n "$SETUP_DEPENDENCY" ]]; then
-    submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl \
-      --dependency "$SETUP_DEPENDENCY"
-  else
-    submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl
+if [[ "$RESUME_AFTER_PREFLIGHT" == 1 ]]; then
+  verify_active_or_completed_job model "$EXISTING_MODEL_JOB_ID"
+  MODEL_JOB_ID="$EXISTING_MODEL_JOB_ID"
+  MODEL_JOB_DISPOSITION="$JOB_DISPOSITION"
+  if [[ "$MODEL_JOB_DISPOSITION" == ACTIVE ]]; then
+    MODEL_DEPENDENCY="$MODEL_JOB_ID"
   fi
-  BFCL_JOB_ID="$LAST_JOB_ID" BFCL_DIR="$LAST_RUN_DIR"
-  BFCL_DEPENDENCY="$BFCL_JOB_ID"
-fi
-
-if [[ -n "$SETUP_DEPENDENCY" ]]; then
-  submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
-    --config "$CONFIG" --dependency "$SETUP_DEPENDENCY"
+  verify_active_or_completed_job preflight "$EXISTING_PREFLIGHT_JOB_ID"
+  PREFLIGHT_JOB_ID="$EXISTING_PREFLIGHT_JOB_ID"
+  if [[ "$JOB_DISPOSITION" == ACTIVE ]]; then
+    PREFLIGHT_DEPENDENCY="$PREFLIGHT_JOB_ID"
+  elif [[ "$MODEL_JOB_DISPOSITION" != COMPLETED ]]; then
+    die "preflight job $PREFLIGHT_JOB_ID completed before model job $MODEL_JOB_ID was confirmed successful"
+  fi
+  echo "Reusing model job $MODEL_JOB_ID and preflight job $PREFLIGHT_JOB_ID; resuming at training."
 else
-  submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
-    --config "$CONFIG"
+  if [[ -z "$BFCL_JOB_ID" ]]; then
+    if [[ -n "$SETUP_DEPENDENCY" ]]; then
+      submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl \
+        --dependency "$SETUP_DEPENDENCY"
+    else
+      submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl
+    fi
+    BFCL_JOB_ID="$LAST_JOB_ID" BFCL_DIR="$LAST_RUN_DIR"
+    BFCL_DEPENDENCY="$BFCL_JOB_ID"
+  fi
+
+  if [[ -n "$SETUP_DEPENDENCY" ]]; then
+    submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
+      --config "$CONFIG" --dependency "$SETUP_DEPENDENCY"
+  else
+    submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
+      --config "$CONFIG"
+  fi
+  MODEL_JOB_ID="$LAST_JOB_ID"
+
+  submit_gpu_stage preflight "$SUBMIT" "${base_args[@]}" \
+    --stage preflight --dependency "$MODEL_JOB_ID"
+  PREFLIGHT_JOB_ID="$LAST_JOB_ID"
+  PREFLIGHT_DEPENDENCY="$PREFLIGHT_JOB_ID"
 fi
-MODEL_JOB_ID="$LAST_JOB_ID"
 
-submit_gpu_stage preflight "$SUBMIT" "${base_args[@]}" \
-  --stage preflight --dependency "$MODEL_JOB_ID"
-PREFLIGHT_JOB_ID="$LAST_JOB_ID"
-
-TRAIN_DEPENDENCIES="$MODEL_JOB_ID,$PREFLIGHT_JOB_ID"
+# In the normal pipeline, preflight carries the model-success dependency. On
+# resume, an active model job is also included as a direct gate; completed model
+# jobs are omitted so an old ID cannot expire while preflight waits in the queue.
+TRAIN_DEPENDENCIES="$PREFLIGHT_DEPENDENCY"
+[[ -z "$MODEL_DEPENDENCY" ]] || TRAIN_DEPENDENCIES="${TRAIN_DEPENDENCIES:+$TRAIN_DEPENDENCIES,}$MODEL_DEPENDENCY"
 [[ -z "$XLAM_DEPENDENCY" ]] || TRAIN_DEPENDENCIES="$XLAM_DEPENDENCY,$TRAIN_DEPENDENCIES"
 submit_gpu_stage train "$SUBMIT" "${base_args[@]}" --stage train \
   --config "$CONFIG" --data-dir "$XLAM_DIR" --dependency "$TRAIN_DEPENDENCIES"
