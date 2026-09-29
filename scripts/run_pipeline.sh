@@ -6,6 +6,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ACCOUNT="" PARTITION="" GPU_RESOURCE="" ENV_SCRIPT=""
 CONFIG="" CONFIG_SET=0
 CONTINUE_AFTER_XLAM=0 EXISTING_SETUP_JOB_ID="" EXISTING_XLAM_JOB_ID="" EXISTING_XLAM_DIR=""
+EXISTING_BFCL_JOB_ID="" EXISTING_BFCL_DIR=""
 
 usage() {
   cat <<'USAGE'
@@ -21,7 +22,8 @@ dependencies; Slurm runs each stage only after its required predecessors succeed
 
 To continue after an already completed xLAM preparation, pass
 --continue-after-xlam, --setup-job-id, --xlam-job-id, and --xlam-dir. The script
-validates the prepared files and resumes with BFCL/model preparation.
+validates the prepared files, refreshes the Python environment, and resumes with
+BFCL/model preparation. Add --bfcl-job-id and --bfcl-dir to reuse completed BFCL data.
 
 Options:
   --account ACCOUNT       Required Slurm account
@@ -34,6 +36,8 @@ Options:
   --setup-job-id ID       Successful setup job required by --continue-after-xlam
   --xlam-job-id ID        Successful xLAM preparation job required by --continue-after-xlam
   --xlam-dir PATH         Existing xLAM dataset directory required by --continue-after-xlam
+  --bfcl-job-id ID        Optional successful BFCL preparation job to reuse
+  --bfcl-dir PATH         Existing BFCL data directory required with --bfcl-job-id
   --help                  Show this help
 
 The default config is the shared-heads seed-42 baseline. The pipeline submits
@@ -45,7 +49,7 @@ die() { echo "run_pipeline: $*" >&2; exit 2; }
 
 while (($#)); do
   case "$1" in
-    --account|--project-dir|--config|--env-script|--partition|--gpu-resource|--setup-job-id|--xlam-job-id|--xlam-dir)
+    --account|--project-dir|--config|--env-script|--partition|--gpu-resource|--setup-job-id|--xlam-job-id|--xlam-dir|--bfcl-job-id|--bfcl-dir)
       (($# >= 2)) || die "$1 needs a value"
       key="$1"; value="$2"; shift 2
       case "$key" in
@@ -58,6 +62,8 @@ while (($#)); do
         --setup-job-id) EXISTING_SETUP_JOB_ID="$value" ;;
         --xlam-job-id) EXISTING_XLAM_JOB_ID="$value" ;;
         --xlam-dir) EXISTING_XLAM_DIR="$value" ;;
+        --bfcl-job-id) EXISTING_BFCL_JOB_ID="$value" ;;
+        --bfcl-dir) EXISTING_BFCL_DIR="$value" ;;
       esac
       ;;
     --continue-after-xlam) CONTINUE_AFTER_XLAM=1; shift ;;
@@ -71,10 +77,16 @@ done
 [[ -z "$GPU_RESOURCE" || "$GPU_RESOURCE" =~ ^[[:alnum:]_.:=+-]+$ ]] || die "invalid GPU resource syntax"
 if [[ "$CONTINUE_AFTER_XLAM" == 0 ]]; then
   [[ -n "${HF_TOKEN:-}" ]] || die "HF_TOKEN must be set in the environment for gated xLAM data preparation"
+  [[ -z "$EXISTING_SETUP_JOB_ID$EXISTING_XLAM_JOB_ID$EXISTING_XLAM_DIR$EXISTING_BFCL_JOB_ID$EXISTING_BFCL_DIR" ]] || \
+    die "existing job/data options require --continue-after-xlam"
 else
   [[ "$EXISTING_SETUP_JOB_ID" =~ ^[0-9]+$ ]] || die "--continue-after-xlam requires numeric --setup-job-id"
   [[ "$EXISTING_XLAM_JOB_ID" =~ ^[0-9]+$ ]] || die "--continue-after-xlam requires numeric --xlam-job-id"
   [[ -n "$EXISTING_XLAM_DIR" ]] || die "--continue-after-xlam requires --xlam-dir"
+  [[ -z "$EXISTING_BFCL_JOB_ID" && -z "$EXISTING_BFCL_DIR" || \
+     "$EXISTING_BFCL_JOB_ID" =~ ^[0-9]+$ && -n "$EXISTING_BFCL_DIR" ]] || \
+    die "provide both --bfcl-job-id (numeric) and --bfcl-dir, or neither"
+  unset HF_TOKEN
 fi
 
 PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || die "project directory does not exist"
@@ -96,7 +108,8 @@ if [[ -n "$ENV_SCRIPT" ]]; then base_args+=(--env-script "$ENV_SCRIPT"); fi
 if [[ -n "$PARTITION" ]]; then base_args+=(--partition "$PARTITION"); fi
 
 LAST_JOB_ID="" LAST_RUN_DIR="" LAST_RECEIPT="" UNVERIFIED_STAGES=""
-SETUP_DEPENDENCY="" XLAM_DEPENDENCY=""
+SETUP_DEPENDENCY="" XLAM_DEPENDENCY="" BFCL_DEPENDENCY=""
+BFCL_JOB_ID="" BFCL_DIR=""
 submit_stage() {
   local label="$1" output rc line receipt_state=""
   shift
@@ -229,7 +242,41 @@ for split in ("train", "validation", "calibration", "test"):
 PY
   verify_completed_job setup "$SETUP_JOB_ID"
   verify_completed_job xLAM "$XLAM_JOB_ID"
-  echo "Reusing prepared data $XLAM_DIR. New stages will not depend on historical completed job IDs."
+  if [[ -n "$EXISTING_BFCL_JOB_ID" ]]; then
+    BFCL_JOB_ID="$EXISTING_BFCL_JOB_ID"
+    if [[ "$EXISTING_BFCL_DIR" == /* ]]; then
+      BFCL_DIR="$EXISTING_BFCL_DIR"
+    else
+      BFCL_DIR="$PROJECT_DIR/$EXISTING_BFCL_DIR"
+    fi
+    [[ -d "$BFCL_DIR" ]] || die "BFCL data directory does not exist: $BFCL_DIR"
+    verify_completed_job BFCL "$BFCL_JOB_ID"
+    python3 - "$BFCL_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+manifest_path = root / "selector_manifest.json"
+if not manifest_path.is_file():
+    raise SystemExit(f"BFCL selector manifest is missing: {manifest_path}")
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+if manifest.get("source") != "gorilla-llm/Berkeley-Function-Calling-Leaderboard":
+    raise SystemExit("BFCL selector manifest identifies an unexpected source")
+for category in ("multiple", "live_multiple"):
+    path = root / f"{category}.selector.jsonl"
+    expected = manifest.get("categories", {}).get(category)
+    if not path.is_file() or not isinstance(expected, int) or expected <= 0:
+        raise SystemExit(f"BFCL {category} selector data is missing or has an invalid count")
+    with path.open(encoding="utf-8") as stream:
+        actual = sum(1 for line in stream if line.strip())
+    if actual != expected:
+        raise SystemExit(f"BFCL {category} count mismatch: manifest={expected}, file={actual}")
+PY
+    echo "Reusing BFCL data $BFCL_DIR from job $BFCL_JOB_ID."
+  fi
+  echo "Reusing prepared xLAM data $XLAM_DIR. Refreshing the environment from the current lockfile."
+  submit_stage setup "$SUBMIT" "${base_args[@]}" --stage setup
+  SETUP_JOB_ID="$LAST_JOB_ID"
+  SETUP_DEPENDENCY="$SETUP_JOB_ID"
 else
   submit_stage setup "$SUBMIT" "${base_args[@]}" --stage setup
   SETUP_JOB_ID="$LAST_JOB_ID"
@@ -243,13 +290,16 @@ else
   unset HF_TOKEN
 fi
 
-if [[ -n "$SETUP_DEPENDENCY" ]]; then
-  submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl \
-    --dependency "$SETUP_DEPENDENCY"
-else
-  submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl
+if [[ -z "$BFCL_JOB_ID" ]]; then
+  if [[ -n "$SETUP_DEPENDENCY" ]]; then
+    submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl \
+      --dependency "$SETUP_DEPENDENCY"
+  else
+    submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl
+  fi
+  BFCL_JOB_ID="$LAST_JOB_ID" BFCL_DIR="$LAST_RUN_DIR"
+  BFCL_DEPENDENCY="$BFCL_JOB_ID"
 fi
-BFCL_JOB_ID="$LAST_JOB_ID" BFCL_DIR="$LAST_RUN_DIR"
 
 if [[ -n "$SETUP_DEPENDENCY" ]]; then
   submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
@@ -280,7 +330,8 @@ submit_gpu_stage evaluate-xlam "$SUBMIT" "${base_args[@]}" --stage evaluate \
   --calibration "$CALIBRATION_DIR/calibration.json" --dependency "$CALIBRATION_JOB_ID"
 XLAM_EVALUATION_JOB_ID="$LAST_JOB_ID" XLAM_EVALUATION_DIR="$LAST_RUN_DIR"
 
-BENCHMARK_DEPENDENCIES="$BFCL_JOB_ID,$CALIBRATION_JOB_ID"
+BENCHMARK_DEPENDENCIES="$CALIBRATION_JOB_ID"
+[[ -z "$BFCL_DEPENDENCY" ]] || BENCHMARK_DEPENDENCIES="$BFCL_DEPENDENCY,$BENCHMARK_DEPENDENCIES"
 submit_gpu_stage evaluate-bfcl "$SUBMIT" "${base_args[@]}" --stage benchmark \
   --checkpoint "$TRAIN_DIR/checkpoints/best.pt" --data-dir "$BFCL_DIR" \
   --category live_multiple --calibration "$CALIBRATION_DIR/calibration.json" \
@@ -292,7 +343,7 @@ cat <<SUMMARY
 Pipeline queued with afterok dependencies. Jobs run only after their required predecessors succeed.
   setup:          $SETUP_JOB_ID
   xLAM data:      $XLAM_JOB_ID  ($XLAM_DIR)
-  BFCL download:  $BFCL_JOB_ID  ($BFCL_DIR)
+  BFCL data:      $BFCL_JOB_ID  ($BFCL_DIR)
   model download: $MODEL_JOB_ID
   H100 preflight: $PREFLIGHT_JOB_ID
   training:       $TRAIN_JOB_ID  ($TRAIN_DIR)
