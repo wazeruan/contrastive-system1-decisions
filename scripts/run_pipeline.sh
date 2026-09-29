@@ -78,7 +78,7 @@ if [[ -n "$PARTITION" ]]; then base_args+=(--partition "$PARTITION"); fi
 
 LAST_JOB_ID="" LAST_RUN_DIR="" LAST_RECEIPT="" UNVERIFIED_STAGES=""
 submit_stage() {
-  local label="$1" output rc line
+  local label="$1" output rc line receipt_state=""
   shift
   echo "Submitting pipeline stage: $label"
   if output="$("$@" 2>&1)"; then
@@ -95,10 +95,19 @@ submit_stage() {
       RECEIPT=*) LAST_RECEIPT="${line#RECEIPT=}" ;;
     esac
   done <<< "$output"
-  [[ "$LAST_JOB_ID" =~ ^[0-9]+$ ]] || die "$label returned no numeric JOB_ID"
-  [[ -n "$LAST_RUN_DIR" && -n "$LAST_RECEIPT" ]] || die "$label did not report its run directory and receipt"
   if (( rc != 0 )); then
-    if [[ "$output" == *"Job is running but application startup is unverified."* ]]; then
+    if [[ -n "$LAST_RECEIPT" && -f "$LAST_RECEIPT" ]]; then
+      receipt_state="$(python3 - "$LAST_RECEIPT" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("state", ""))
+except (OSError, ValueError):
+    pass
+PY
+)"
+    fi
+    if [[ "$receipt_state" == RUNNING_STARTUP_UNVERIFIED ]]; then
+      [[ "$LAST_JOB_ID" =~ ^[0-9]+$ && -n "$LAST_RECEIPT" ]] || die "$label startup is unverified and its submission details are missing"
       UNVERIFIED_STAGES+="${UNVERIFIED_STAGES:+; }$label (job $LAST_JOB_ID; $LAST_RECEIPT)"
       echo "$label is confirmed RUNNING, but application startup is unverified. Later jobs will depend on its successful completion." >&2
     else
@@ -106,6 +115,8 @@ submit_stage() {
       return "$rc"
     fi
   fi
+  [[ "$LAST_JOB_ID" =~ ^[0-9]+$ ]] || die "$label returned no numeric JOB_ID"
+  [[ -n "$LAST_RUN_DIR" && -n "$LAST_RECEIPT" ]] || die "$label did not report its run directory and receipt"
   printf 'PIPELINE_STAGE=%s JOB_ID=%s RUN_DIR=%s RECEIPT=%s\n' \
     "$label" "$LAST_JOB_ID" "$LAST_RUN_DIR" "$LAST_RECEIPT"
 }

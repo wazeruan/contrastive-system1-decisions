@@ -20,6 +20,12 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def receipt_path(raw_path: str) -> Path:
+    if not raw_path:
+        raise ValueError("receipt path is empty")
+    return Path(raw_path)
+
+
 def now_utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -56,11 +62,11 @@ def command_init(args: argparse.Namespace) -> None:
         "job_id": None,
         "state_history": [{"state": "SUBMITTING", "at_utc": now_utc()}],
     }
-    atomic_json(Path(args.path), value)
+    atomic_json(receipt_path(args.path), value)
 
 
 def command_update(args: argparse.Namespace) -> None:
-    path = Path(args.path)
+    path = receipt_path(args.path)
     lock_path = path.with_name(path.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a", encoding="utf-8") as lock:

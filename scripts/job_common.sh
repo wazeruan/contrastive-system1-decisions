@@ -4,7 +4,8 @@ set -Eeuo pipefail
 
 APP_PID=""
 APP_STAGE=""
-RECEIPT_PATH=""
+# Batch entry points set this before sourcing the shared functions.
+RECEIPT_PATH="${RECEIPT_PATH:-}"
 RUN_PATH=""
 PROJECT_PATH=""
 SIGNAL_SENT=""

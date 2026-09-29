@@ -360,6 +360,18 @@ LOG_OUT="${LOG_OUT//%j/$JOB_ID}"; LOG_ERR="${LOG_ERR//%j/$JOB_ID}"
 echo "JOB_ID=$JOB_ID"; echo "RUN_DIR=$RUN_DIR"; echo "RECEIPT=$RECEIPT"; echo "LOG_OUT=$LOG_OUT"; echo "LOG_ERR=$LOG_ERR"
 START_MARKER="$RECEIPT.started.json"
 
+show_failure_logs() {
+  echo "Slurm logs: stdout=$LOG_OUT stderr=$LOG_ERR" >&2
+  if [[ -f "$LOG_ERR" ]]; then
+    echo "Last 80 stderr lines:" >&2
+    tail -n 80 "$LOG_ERR" >&2
+  fi
+  if [[ -f "$LOG_OUT" ]]; then
+    echo "Last 80 stdout lines:" >&2
+    tail -n 80 "$LOG_OUT" >&2
+  fi
+}
+
 running_seen=0 query_failures=0
 deadline=$(( $(date +%s) + STARTUP_TIMEOUT ))
 while (( $(date +%s) < deadline )); do
@@ -373,7 +385,10 @@ while (( $(date +%s) < deadline )); do
           --job-id "$JOB_ID" --marker "$START_MARKER" --if-nonterminal --print-state)"
         case "$started_state" in
           SUCCEEDED) echo "Job completed during startup monitoring; receipt: $RECEIPT"; exit 0 ;;
-          FAILED|PREEMPTED) echo "Job ended during startup monitoring with state $started_state; receipt: $RECEIPT" >&2; exit 1 ;;
+          FAILED|PREEMPTED)
+            echo "Job ended during startup monitoring with state $started_state; receipt: $RECEIPT" >&2
+            show_failure_logs
+            exit 1 ;;
           *) echo "APPLICATION STARTED. Receipt: $RECEIPT"; exit 0 ;;
         esac
       fi
@@ -407,12 +422,12 @@ PY
                 exit 0
               fi
               echo "Job ended during startup monitoring; state: $final_state; Slurm state: $acct_line. Receipt: $RECEIPT" >&2
+              show_failure_logs
               exit 1
             fi
             python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state FAILED --job-id "$JOB_ID" --reason "terminal Slurm state $acct_line before STARTED"
             echo "Failed before application startup ($acct_line). Receipt: $RECEIPT" >&2
-            [[ ! -f "$LOG_ERR" ]] || tail -n 80 "$LOG_ERR" >&2
-            [[ ! -f "$LOG_OUT" ]] || tail -n 80 "$LOG_OUT" >&2
+            show_failure_logs
             exit 1 ;;
         esac
       else
