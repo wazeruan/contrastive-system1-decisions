@@ -54,7 +54,7 @@ This is an SSH-first, headless project. No GUI or notebook is required. Place th
 uv sync
 ```
 
-After accepting the gated xLAM conditions and logging in to Hugging Face, set up the environment in a CPU allocation, then prepare data in separate CPU jobs. Supply `--account`; the wrapper uses the cluster's default partition when `--partition` is omitted. GPU stages request one GPU with Slurm's `--gpus-per-node=1`. The preflight checks that the allocation is an H100 with at least 75 GiB and BF16 support before model work starts. If the default partition does not provide that GPU, override it with the cluster's H100 partition and, if needed, its GPU resource syntax using `--partition` and `--gpu-resource`.
+After accepting the gated xLAM conditions and logging in to Hugging Face, set up the environment in a CPU allocation, then prepare data in separate CPU jobs. Supply `--account`; the wrapper uses the cluster's default partition when `--partition` is omitted. GPU stages request `--gpus=h100:1`. The preflight checks that the allocation is an H100 with at least 75 GiB and BF16 support before model work starts. If the default partition does not provide that GPU, override it with the cluster's H100 partition using `--partition`. If your site uses a different Slurm GPU type name, override the request with `--gpu-resource 'gpu:<site-type>:1'`, using the exact type configured at that site.
 
 ```bash
 ./scripts/submit.sh --stage setup --account "$SLURM_ACCOUNT"

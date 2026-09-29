@@ -17,8 +17,9 @@ Stages: setup, prepare-xlam, prepare-bfcl, prepare-model, preflight, train, cali
 Common: --project-dir PATH --env-script PATH --partition NAME --gpu-resource SPEC
         --cpus-per-task N --memory SIZE --time D-HH:MM:SS
         --output-dir PATH --dependency JOB_ID --startup-timeout-seconds N --min-free-gib N --help
-        By default, Slurm uses the cluster's default partition. GPU stages request one GPU with
-        --gpus-per-node=1; --partition and --gpu-resource are optional cluster-specific overrides.
+        By default, Slurm uses the cluster's default partition. GPU stages request --gpus=h100:1;
+        --partition and --gpu-resource are optional cluster-specific overrides; --gpu-resource takes
+        a full GRES value, such as gpu:<site-type>:1.
 
 Stage options:
   prepare-xlam:  [--input-json PATH] [--bm25-negatives N]
@@ -276,7 +277,7 @@ print(json.dumps({
     "environment_script": environment_script or None,
     "model_cache_manifest": model_manifest,
     "sbatch": {"account": account, "partition": partition or None, "gpu_resource": gpu or None,
-               "gpus_per_node": gpu_count if gpu_count and not gpu else None,
+               "gpus": f"h100:{gpu_count}" if gpu_count and not gpu else None,
                "cpus_per_task": cpus, "memory": memory, "time": wall,
                "afterok_job_id": dependency or None},
     "arguments": {"config": config or None, "data_dir": data_dir or None,
@@ -299,7 +300,7 @@ sbatch_args=(--parsable --comment "csd:$TOKEN" --account "$ACCOUNT"
 if [[ -n "$GPU_RESOURCE" ]]; then
   sbatch_args+=(--gres="$GPU_RESOURCE")
 elif (( GPU_COUNT > 0 )); then
-  sbatch_args+=(--gpus-per-node="$GPU_COUNT")
+  sbatch_args+=(--gpus="h100:$GPU_COUNT")
 fi
 [[ -z "$DEPENDENCY" ]] || sbatch_args+=(--dependency="afterok:${DEPENDENCY//,/:}")
 [[ "$STAGE" != train ]] || sbatch_args+=(--signal=B:USR1@300)
