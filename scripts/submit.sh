@@ -112,7 +112,7 @@ case "$STAGE" in
     GPU_COUNT=1
     [[ "$RESUME" == 0 || -z "$DEPENDENCY" ]] || die "resume cannot use --dependency"
     [[ -n "$CONFIG" && -f "$CONFIG" ]] || die "train needs an existing --config"
-    [[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] || die "train needs an existing --data-dir"
+    [[ -n "$DATA_DIR" && ( -d "$DATA_DIR" || -n "$DEPENDENCY" ) ]] || die "train needs an existing --data-dir, or --dependency"
     if [[ -z "$DEPENDENCY" ]]; then
       for split in train validation; do [[ -f "$DATA_DIR/$split.jsonl" ]] || die "missing $DATA_DIR/$split.jsonl"; done
     fi
@@ -130,21 +130,25 @@ case "$STAGE" in
     [[ "$RESUME" == 0 ]] || die "evaluate does not support resume"
     [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "evaluate needs an existing --checkpoint, or --dependency"
     [[ -n "$DATA_PATH" && ( -f "$DATA_PATH" || -n "$DEPENDENCY" ) ]] || die "evaluate needs an existing --data file, or --dependency"
-    [[ -z "$CALIBRATION" || -f "$CALIBRATION" ]] || die "calibration file does not exist"
+    [[ -z "$CALIBRATION" || -f "$CALIBRATION" || -n "$DEPENDENCY" ]] || die "calibration file does not exist, or use --dependency"
     CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/evaluation" ;;
   benchmark)
     GPU_COUNT=1
     [[ "$RESUME" == 0 ]] || die "benchmark does not support resume"
     [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "benchmark needs an existing --checkpoint, or --dependency"
-    [[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] || die "benchmark needs an existing --data-dir"
+    [[ -n "$DATA_DIR" && ( -d "$DATA_DIR" || -n "$DEPENDENCY" ) ]] || die "benchmark needs an existing --data-dir, or --dependency"
     [[ "$CATEGORY" == multiple || "$CATEGORY" == live_multiple ]] || die "category must be multiple or live_multiple"
     [[ -f "$DATA_DIR/$CATEGORY.selector.jsonl" || -n "$DEPENDENCY" ]] || die "missing selector file for $CATEGORY, or use --dependency"
-    [[ -z "$CALIBRATION" || -f "$CALIBRATION" ]] || die "calibration file does not exist"
+    [[ -z "$CALIBRATION" || -f "$CALIBRATION" || -n "$DEPENDENCY" ]] || die "calibration file does not exist, or use --dependency"
     CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/bfcl-$CATEGORY" ;;
   *) die "unknown stage: $STAGE" ;;
 esac
+
+# The gated xLAM dataset is the only current stage that needs a Hugging Face
+# credential. Do not place it in unrelated Slurm job environments.
+if [[ "$STAGE" != "prepare-xlam" ]]; then unset HF_TOKEN; fi
 
 [[ "$CPUS" =~ ^[0-9]+$ ]] && (( CPUS >= 1 && CPUS <= 128 )) || die "cpus-per-task must be 1..128"
 [[ "$MEMORY" =~ ^[0-9]+([KMGTP])?$ ]] || die "memory must look like 32G or 64000M"
@@ -168,6 +172,7 @@ required = {"model_name", "model_revision", "architecture", "projection_dim", "t
 missing = required - config.keys()
 if missing: raise SystemExit(f"config missing fields: {', '.join(sorted(missing))}")
 if config["architecture"] not in {"shared_tied", "shared_heads", "separate"}: raise SystemExit("unsupported architecture")
+if config.get("require_h100", True) is not True: raise SystemExit("training config must set require_h100 to true")
 import re
 if not re.fullmatch(r"[0-9a-f]{40}", str(config["model_revision"])): raise SystemExit("model_revision must be a full 40-character commit SHA")
 if config["epochs"] < 1 or config["batch_size"] < 1 or config["tau"] <= 0: raise SystemExit("invalid training values")
@@ -175,7 +180,8 @@ PY
 fi
 if [[ "$STAGE" == train || "$STAGE" == calibrate || "$STAGE" == evaluate || "$STAGE" == benchmark ]]; then
   [[ -f "$MODEL_MANIFEST" || -n "$DEPENDENCY" ]] || die "pinned model cache is missing; run prepare-model or pass its job ID with --dependency"
-  if [[ "$STAGE" == train && -f "$MODEL_MANIFEST" ]]; then
+  # A dependent prepare-model stage may replace a stale manifest before train starts.
+  if [[ "$STAGE" == train && -f "$MODEL_MANIFEST" && -z "$DEPENDENCY" ]]; then
     python3 - "$CONFIG" "$MODEL_MANIFEST" <<'PY'
 import json, sys
 config = json.load(open(sys.argv[1], encoding="utf-8"))

@@ -56,6 +56,17 @@ uv sync
 
 After accepting the gated xLAM conditions and logging in to Hugging Face, set up the environment in a CPU allocation, then prepare data in separate CPU jobs. Supply `--account`; the wrapper uses the cluster's default partition when `--partition` is omitted. GPU stages request `--gpus=h100:1`. The preflight checks that the allocation is an H100 with at least 75 GiB and BF16 support before model work starts. If the default partition does not provide that GPU, override it with the cluster's H100 partition using `--partition`. If your site uses a different Slurm GPU type name, override the request with `--gpu-resource 'gpu:<site-type>:1'`, using the exact type configured at that site.
 
+To queue the full seed-42 baseline in one command, enter the Hugging Face token at the hidden prompt. The launcher submits setup, xLAM/BFCL/model preparation, H100 preflight, training, calibration, xLAM test evaluation, and BFCL `live_multiple` evaluation with `afterok` dependencies. It requires `HF_TOKEN` in its environment and forwards it only to xLAM preparation; it never accepts the token as a command-line argument or writes it to receipts/logs.
+
+```bash
+HF_TOKEN="$(python3 -c 'import getpass; print(getpass.getpass("Hugging Face token: "))')" \
+  ./scripts/run_pipeline.sh --account def-denilson
+```
+
+The command prints each job ID, receipt, and resolved run directory. It queues the dependent jobs; Slurm starts each only after its prerequisites succeed. Add `--env-script PATH` if Python/uv setup must be loaded on the cluster. Use `--help` to see optional project, config, partition, and GPU resource overrides.
+
+For manual stage-by-stage control, submit the stages below. `HF_TOKEN` is needed only for the xLAM preparation command.
+
 ```bash
 ./scripts/submit.sh --stage setup --account "$SLURM_ACCOUNT"
 ./scripts/submit.sh --stage prepare-xlam --account "$SLURM_ACCOUNT" \
@@ -66,7 +77,7 @@ After accepting the gated xLAM conditions and logging in to Hugging Face, set up
   --config configs/shared-heads-h100.json --dependency SETUP_JOB_ID
 ```
 
-Replace job ID placeholders with the preceding command's printed `JOB_ID`. `prepare-model` downloads the pinned DeBERTa weights in a CPU allocation; GPU jobs then run with Hugging Face offline mode and require the matching cache manifest. If the cluster exposes Python/uv through modules, provide a shared shell setup file with `--env-script PATH`; it is sourced on the submit and compute nodes. Run `--stage preflight` after setup to confirm the default queue grants the required H100 before a long training job. `HF_TOKEN` may be present in the submitting environment for the gated xLAM download; the wrapper forwards the environment without printing the token. Never put it in a command line, config file, Slurm log, or Git. You must accept the dataset conditions yourself. The BFCL snapshot is public and Apache-2.0 licensed.
+Replace job ID placeholders with the preceding command's printed `JOB_ID`. `prepare-model` downloads the pinned DeBERTa weights in a CPU allocation; GPU jobs then run with Hugging Face offline mode and require the matching cache manifest. If the cluster exposes Python/uv through modules, provide a shared shell setup file with `--env-script PATH`; it is sourced on the submit and compute nodes. Run `--stage preflight` after setup to confirm the default queue grants the required H100 before a long training job. `HF_TOKEN` is forwarded only to `prepare-xlam`; never put it in a command-line argument, config file, Slurm log, or Git. You must accept the dataset conditions yourself. The BFCL snapshot is public and Apache-2.0 licensed.
 
 ## Train and evaluate
 

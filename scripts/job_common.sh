@@ -26,6 +26,7 @@ job_initialize() {
     # shellcheck disable=SC1090
     source "$CSD_ENV_SCRIPT"
   fi
+  if [[ "$APP_STAGE" != "prepare-xlam" ]]; then unset HF_TOKEN; fi
   export PYTHONUNBUFFERED=1
   export HF_HOME="${HF_HOME:-$PROJECT_PATH/hf_cache}"
   export CSD_MODEL_CACHE_MANIFEST="${CSD_MODEL_CACHE_MANIFEST:-$PROJECT_PATH/models/model-cache-manifest.json}"
@@ -89,11 +90,22 @@ job_run() {
     echo "srun is required inside this Slurm allocation" >&2
     return 127
   fi
-  srun --ntasks=1 --unbuffered "$@" &
-  APP_PID=$!
   if [[ "$mark_on_launch" == 1 ]]; then
-    if kill -0 "$APP_PID" 2>/dev/null; then job_write_marker "$mark_workflow"; fi
+    CSD_MARKER_PATH="$marker" CSD_RUN_PATH="$RUN_PATH" \
+      CSD_MARKER_WORKFLOW="$mark_workflow" CSD_PROJECT_PATH="$PROJECT_PATH" \
+      srun --ntasks=1 --unbuffered --export=ALL bash -c '
+        source "$CSD_PROJECT_PATH/scripts/job_common.sh"
+        command -v "$1" >/dev/null 2>&1 || {
+          echo "application executable is unavailable on compute node: $1" >&2
+          exit 127
+        }
+        job_write_marker "$CSD_MARKER_WORKFLOW" "$CSD_MARKER_PATH" "$CSD_RUN_PATH"
+        exec "$@"
+      ' csd-launch "$@" &
+  else
+    srun --ntasks=1 --unbuffered "$@" &
   fi
+  APP_PID=$!
   local marked=0
   local start_epoch
   start_epoch="$(date +%s)"
@@ -111,9 +123,6 @@ job_run() {
   local exit_code=0
   wait "$APP_PID" || exit_code=$?
   APP_PID=""
-  if [[ "$mark_on_launch" == 1 && ! -f "$marker" && "$exit_code" == 0 ]]; then
-    job_write_marker "$mark_workflow"
-  fi
   if [[ -f "$marker" && "$marked" -eq 0 ]]; then
     receipt_update STARTED --marker "$marker" --host "$(hostname)"
     marked=1
@@ -123,8 +132,9 @@ job_run() {
 
 job_write_marker() {
   local workflow="$1"
-  local marker="$RECEIPT_PATH.started.json"
-  python3 - "$marker" "$RUN_PATH" "$workflow" "${SLURM_JOB_ID:-unknown}" "$(hostname)" <<'PY'
+  local marker="${2:-$RECEIPT_PATH.started.json}"
+  local run_path="${3:-$RUN_PATH}"
+  python3 - "$marker" "$run_path" "$workflow" "${SLURM_JOB_ID:-unknown}" "$(hostname)" <<'PY'
 import json, os, sys, time
 from pathlib import Path
 path, run_dir, workflow, job_id, host = sys.argv[1:]
