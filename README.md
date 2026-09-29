@@ -65,6 +65,16 @@ HF_TOKEN="$(python3 -c 'import getpass; print(getpass.getpass("Hugging Face toke
 
 The command prints each job ID, receipt, and resolved run directory. It queues the dependent jobs; Slurm starts each only after its prerequisites succeed. Add `--env-script PATH` if Python/uv setup must be loaded on the cluster. Use `--help` to see optional project, config, partition, and GPU resource overrides.
 
+If xLAM preparation completed but the pipeline wrapper stopped before submitting later stages, continue without downloading xLAM again. Supply the successful setup/xLAM job IDs and the existing prepared-data directory:
+
+```bash
+./scripts/run_pipeline.sh --account YOUR_SLURM_ACCOUNT --continue-after-xlam \
+  --setup-job-id SETUP_JOB_ID --xlam-job-id XLAM_JOB_ID \
+  --xlam-dir data/processed/xlam
+```
+
+The continuation validates the manifest and all four split files, then submits BFCL/model preparation, H100 preflight, training, calibration, and evaluations with `afterok` dependencies.
+
 For manual stage-by-stage control, submit the stages below. `HF_TOKEN` is needed only for the xLAM preparation command.
 
 ```bash
