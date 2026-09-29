@@ -323,14 +323,33 @@ case "$STAGE" in
 esac
 
 echo "Submitting $STAGE; resolved output: $RUN_DIR"
-if ! sbatch_output="$(sbatch "${sbatch_args[@]}" "$SBATCH_SCRIPT" "${stage_args[@]}" 2>&1)"; then
-  python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED \
-    --reason "sbatch returned an ambiguous failure: $sbatch_output" --if-nonterminal
-  echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Receipt: $RECEIPT" >&2
+sbatch_rc=0
+if sbatch_output="$(sbatch "${sbatch_args[@]}" "$SBATCH_SCRIPT" "${stage_args[@]}" 2>&1)"; then
+  :
+else
+  sbatch_rc=$?
+fi
+JOB_ID=""
+while IFS= read -r response_line; do
+  if [[ "$response_line" =~ ^([0-9]+)(;[[:alnum:]_.-]+)?$ ]]; then
+    JOB_ID="${BASH_REMATCH[1]}"
+  elif [[ -n "$response_line" ]]; then
+    echo "sbatch response: $response_line" >&2
+  fi
+done <<< "$sbatch_output"
+if (( sbatch_rc != 0 )); then
+  if [[ -n "$JOB_ID" ]]; then
+    python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED \
+      --job-id "$JOB_ID" --reason "sbatch exited $sbatch_rc with response: $sbatch_output" --if-nonterminal
+    echo "UNKNOWN/UNVERIFIED; possible job ID $JOB_ID. Do not resubmit blindly. Receipt: $RECEIPT" >&2
+  else
+    python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED \
+      --reason "sbatch returned an ambiguous failure: $sbatch_output" --if-nonterminal
+    echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Receipt: $RECEIPT" >&2
+  fi
   exit 1
 fi
-JOB_ID="${sbatch_output%%;*}"
-[[ "$JOB_ID" =~ ^[0-9]+$ ]] || {
+[[ -n "$JOB_ID" ]] || {
   python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED \
     --reason "unrecognized sbatch response: $sbatch_output" --if-nonterminal
   echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Receipt: $RECEIPT" >&2
