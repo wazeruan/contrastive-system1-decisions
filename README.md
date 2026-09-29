@@ -1,6 +1,6 @@
 # Contrastive System-1 Decisions
 
-A research prototype for scoring a variable set of typed tool/action candidates against a query. The first experiment compares a fully tied encoder, a shared backbone with separate projection heads, and two separately fine-tuned encoders.
+A research prototype for scoring a variable set of typed tool/action candidates against a query. The main model reuses one DeBERTa encoder for query and candidate schemas, with separate small projection heads. A fully tied projection is the primary sharing ablation; separate encoders are an optional capacity ablation.
 
 “Jev-like” here names the proposed fast candidate-selection role. The implementation is an independent contrastive-learning experiment; it does not claim to reproduce Jev's unreleased model internals.
 
@@ -16,13 +16,13 @@ The xLAM adapter groups exact normalized duplicate queries before splitting into
 
 ## Model and objective
 
-For each example, the query tower reads `[QUERY] <request>` and the action tower reads `[ACTION] <canonical tool schema>`. Mean-pool the encoder outputs, project to 256 dimensions, L2-normalize, and score with cosine similarity divided by `tau=0.07`. Candidate-set cross entropy trains the probability of selecting an action **given the supplied candidates**. It is not a real-world action-success probability.
+For each example, the **same encoder with the same backbone weights** reads `[QUERY] <request>` and, in a separate forward pass, each `[ACTION] <canonical tool schema>`. Mean-pool the outputs, apply role-specific 256-dimensional projection heads, L2-normalize, and score with cosine similarity divided by `tau=0.07`. There is one transformer encoder in the main model, not a query encoder plus a separately parameterized action encoder. Candidate-set cross entropy trains the probability of selecting an action given the supplied candidates; it is not a real-world action-success probability.
 
 The three sharing choices answer different questions:
 
-- `shared_tied`: one backbone and one shared projection for both query and action. This is the smallest model and strongest sharing constraint; it tests whether role prefixes alone are enough.
-- `shared_heads` (**recommended primary model**): one shared backbone with separate query/action projection heads. It preserves common language features while allowing the two roles to map into the comparison space differently.
-- `separate`: independently fine-tuned query and action backbones with separate heads. It tests whether role-specific capacity helps enough to justify roughly twice the backbone parameters and more compute.
+- `shared_heads` (**main model**): one shared backbone with separate query/action projection heads. It preserves common language features while allowing the two roles to map into the comparison space differently.
+- `shared_tied` (**main ablation**): the same single backbone and one shared projection for both roles. It tests whether role prefixes alone are enough.
+- `separate` (**optional ablation only**): independently fine-tuned query and action backbones with separate heads. It tests whether role-specific capacity helps enough to justify roughly twice the backbone parameters and more compute; it is excluded from the minimal experiment below.
 
 For query group `i` and its supplied candidates `j`, the training loss is
 
@@ -100,7 +100,7 @@ The allocation preflight requires an H100 with at least 75 GiB reported device m
 
 ## Planned ablations
 
-1. Encoder architecture: `shared_tied`, `shared_heads`, `separate`; same base checkpoint, split, seed, and optimization budget.
+1. Encoder sharing: compare `shared_tied` with the one-backbone `shared_heads` model using the same checkpoint, split, seed, and optimization budget. Keep `separate` for an optional follow-up capacity ablation.
 2. Negative set: provided candidate schemas versus two training-fold-only BM25-retrieved weak negatives (`--bm25-negatives 2`). No validation/calibration/test tool schemas are mined. Retrieved tools may be valid but unlabeled actions, so report this as a noisy-negative ablation and audit sampled cases before interpreting it.
 3. Calibration: no calibration versus one scalar temperature fitted only on calibration data.
 4. Evaluation: top-1 tool accuracy, MRR, NLL, Brier score, 15-bin ECE, mean candidate count, and latency by candidate-set size. Repeat each architecture with at least three seeds.
@@ -108,7 +108,7 @@ The allocation preflight requires an H100 with at least 75 GiB reported device m
 ## Minimal MSc experiment
 
 1. Run a short shared-head pilot on the full filtered training split to confirm allocation startup, memory, checkpointing, and data sizes; do not tune on BFCL.
-2. Compare `shared_tied`, `shared_heads`, and `separate` using the same xLAM split, optimizer budget, and three seeds (42, 43, 44). Report mean and standard deviation for validation-selected BFCL-free test metrics; report parameter count, peak allocated GPU memory, and per-query latency alongside quality.
+2. Compare the two unified-encoder variants, `shared_tied` and `shared_heads`, using the same xLAM split, optimizer budget, and three seeds (42, 43, 44). Report mean and standard deviation for validation-selected test metrics; report parameter count, peak allocated GPU memory, and per-query latency alongside quality.
 3. Fit one scalar temperature per seed on the calibration split. Evaluate once on the untouched xLAM test split and BFCL V2 Live `multiple`; use the controlled BFCL V3 `multiple` set as the smaller secondary check.
 4. For the negative-set ablation, compare native candidates against BM25 augmentation on the strongest architecture. Keep that comparison separate from the architecture claim and inspect the retrieved negatives for false-negative rate.
 
