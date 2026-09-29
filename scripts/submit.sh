@@ -1,0 +1,410 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+STAGE="" ACCOUNT="" PARTITION="" GPU_RESOURCE="" CONFIG="" DATA_DIR="" INPUT_JSON=""
+OUTPUT_DIR="" OUTPUT_DIR_SET=0 CHECKPOINT="" DATA_PATH="" CALIBRATION="" CATEGORY="" REVISION="main"
+ENV_SCRIPT=""
+BM25_NEGATIVES=0 RESUME=0 CPUS="" MEMORY="" WALL_TIME="" STARTUP_TIMEOUT=180 MIN_FREE_GIB=15
+DEPENDENCY=""
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/submit.sh --stage STAGE --account ACCOUNT --partition PARTITION [options]
+
+Stages: setup, prepare-xlam, prepare-bfcl, prepare-model, preflight, train, calibrate, evaluate, benchmark
+
+Common: --project-dir PATH --env-script PATH --gpu-resource SPEC --cpus-per-task N --memory SIZE --time D-HH:MM:SS
+        --output-dir PATH --dependency JOB_ID --startup-timeout-seconds N --min-free-gib N --help
+        --gpu-resource is required for preflight/train/calibrate/evaluate/benchmark. Example Slurm syntax
+        only: gpu:h100:1; confirm your cluster's syntax before using it.
+
+Stage options:
+  prepare-xlam:  [--input-json PATH] [--bm25-negatives N]
+  prepare-bfcl:  [--revision REF]
+  prepare-model: --config PATH (downloads pinned weights in a CPU allocation)
+  preflight:     checks allocated H100 model, free memory, CUDA, and BF16
+  train:         --config PATH --data-dir PATH [--resume]
+  calibrate:     --checkpoint PATH --data PATH
+  evaluate:      --checkpoint PATH --data PATH [--calibration PATH]
+  benchmark:     --checkpoint PATH --data-dir PATH --category multiple|live_multiple [--calibration PATH]
+
+Submissions write timestamped logs and a durable receipt below logs/. After submission inspect with:
+  squeue -j JOB_ID; scontrol show job JOB_ID
+  sacct -j JOB_ID --format=JobID,JobName,State,ExitCode,Elapsed,Start,End
+USAGE
+}
+die() { echo "submit: $*" >&2; exit 2; }
+
+while (($#)); do
+  case "$1" in
+    --stage|--project-dir|--env-script|--account|--partition|--gpu-resource|--config|--data-dir|--input-json|--output-dir|--checkpoint|--data|--calibration|--category|--revision|--bm25-negatives|--cpus-per-task|--memory|--time|--startup-timeout-seconds|--min-free-gib|--dependency)
+      (($# >= 2)) || die "$1 needs a value"
+      key="$1"; value="$2"; shift 2
+      case "$key" in
+        --stage) STAGE="$value" ;; --project-dir) PROJECT_DIR="$value" ;; --env-script) ENV_SCRIPT="$value" ;;
+        --account) ACCOUNT="$value" ;; --partition) PARTITION="$value" ;;
+        --gpu-resource) GPU_RESOURCE="$value" ;; --config) CONFIG="$value" ;;
+        --data-dir) DATA_DIR="$value" ;; --input-json) INPUT_JSON="$value" ;;
+        --output-dir) OUTPUT_DIR="$value"; OUTPUT_DIR_SET=1 ;; --checkpoint) CHECKPOINT="$value" ;;
+        --data) DATA_PATH="$value" ;; --calibration) CALIBRATION="$value" ;;
+        --category) CATEGORY="$value" ;; --revision) REVISION="$value" ;;
+        --bm25-negatives) BM25_NEGATIVES="$value" ;; --cpus-per-task) CPUS="$value" ;;
+        --memory) MEMORY="$value" ;; --time) WALL_TIME="$value" ;;
+        --startup-timeout-seconds) STARTUP_TIMEOUT="$value" ;; --min-free-gib) MIN_FREE_GIB="$value" ;;
+        --dependency) DEPENDENCY="$value" ;;
+      esac
+      ;;
+    --resume) RESUME=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
+PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || die "project directory does not exist"
+cd "$PROJECT_DIR"
+if [[ -n "$ENV_SCRIPT" ]]; then
+  [[ "$ENV_SCRIPT" == /* ]] || ENV_SCRIPT="$PROJECT_DIR/$ENV_SCRIPT"
+  [[ -r "$ENV_SCRIPT" ]] || die "environment script is not readable: $ENV_SCRIPT"
+  # shellcheck disable=SC1090
+  source "$ENV_SCRIPT"
+  export CSD_ENV_SCRIPT="$ENV_SCRIPT"
+fi
+MODEL_MANIFEST="${CSD_MODEL_CACHE_MANIFEST:-$PROJECT_DIR/models/model-cache-manifest.json}"
+[[ "$MODEL_MANIFEST" == /* ]] || MODEL_MANIFEST="$PROJECT_DIR/$MODEL_MANIFEST"
+export CSD_MODEL_CACHE_MANIFEST="$MODEL_MANIFEST"
+
+[[ -n "$STAGE" ]] || die "--stage is required"
+[[ -n "$ACCOUNT" && "$ACCOUNT" =~ ^[[:alnum:]_.-]+$ ]] || die "valid --account is required"
+[[ -n "$PARTITION" && "$PARTITION" =~ ^[[:alnum:]_.-]+$ ]] || die "valid --partition is required"
+[[ "$STARTUP_TIMEOUT" =~ ^[0-9]+$ ]] && (( STARTUP_TIMEOUT >= 10 && STARTUP_TIMEOUT <= 1800 )) || die "startup timeout must be 10..1800 seconds"
+[[ "$MIN_FREE_GIB" =~ ^[0-9]+$ ]] && (( MIN_FREE_GIB >= 1 && MIN_FREE_GIB <= 100000 )) || die "minimum free space must be 1..100000 GiB"
+[[ "$BM25_NEGATIVES" =~ ^[0-9]+$ ]] && (( BM25_NEGATIVES <= 100 )) || die "BM25 negative count must be 0..100"
+[[ -z "$DEPENDENCY" || "$DEPENDENCY" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--dependency needs numeric Slurm job IDs separated by commas"
+
+case "$STAGE" in
+  setup)
+    [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "setup does not accept GPU or resume options"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-16G}"; WALL_TIME="${WALL_TIME:-02:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/operations/setup" ;;
+  prepare-xlam)
+    [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "prepare-xlam is a CPU stage and cannot resume"
+    [[ -z "$INPUT_JSON" || -f "$INPUT_JSON" ]] || die "input JSON does not exist: $INPUT_JSON"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-24G}"; WALL_TIME="${WALL_TIME:-02:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/data/processed/xlam" ;;
+  prepare-bfcl)
+    [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "prepare-bfcl is a CPU stage and cannot resume"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-12G}"; WALL_TIME="${WALL_TIME:-01:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/data/benchmark/bfcl" ;;
+  prepare-model)
+    [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "prepare-model is a CPU stage and cannot resume"
+    [[ -n "$CONFIG" && -f "$CONFIG" ]] || die "prepare-model needs an existing --config"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-24G}"; WALL_TIME="${WALL_TIME:-01:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/model-cache-$(basename "${CONFIG%.json}")" ;;
+  preflight)
+    [[ -n "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "preflight requires --gpu-resource and cannot resume"
+    CPUS="${CPUS:-2}"; MEMORY="${MEMORY:-8G}"; WALL_TIME="${WALL_TIME:-00:10:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/preflight" ;;
+  train)
+    [[ -n "$GPU_RESOURCE" ]] || die "train needs --gpu-resource"
+    [[ "$RESUME" == 0 || -z "$DEPENDENCY" ]] || die "resume cannot use --dependency"
+    [[ -n "$CONFIG" && -f "$CONFIG" ]] || die "train needs an existing --config"
+    [[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] || die "train needs an existing --data-dir"
+    if [[ -z "$DEPENDENCY" ]]; then
+      for split in train validation; do [[ -f "$DATA_DIR/$split.jsonl" ]] || die "missing $DATA_DIR/$split.jsonl"; done
+    fi
+    CPUS="${CPUS:-8}"; MEMORY="${MEMORY:-64G}"; WALL_TIME="${WALL_TIME:-12:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/$(basename "${CONFIG%.json}")-seed42" ;;
+  calibrate)
+    [[ -n "$GPU_RESOURCE" ]] || die "calibrate needs --gpu-resource"
+    [[ "$RESUME" == 0 ]] || die "calibrate does not support resume"
+    [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "calibrate needs an existing --checkpoint, or --dependency"
+    [[ -n "$DATA_PATH" && ( -f "$DATA_PATH" || -n "$DEPENDENCY" ) ]] || die "calibrate needs an existing --data file, or --dependency"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/calibration" ;;
+  evaluate)
+    [[ -n "$GPU_RESOURCE" ]] || die "evaluate needs --gpu-resource"
+    [[ "$RESUME" == 0 ]] || die "evaluate does not support resume"
+    [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "evaluate needs an existing --checkpoint, or --dependency"
+    [[ -n "$DATA_PATH" && ( -f "$DATA_PATH" || -n "$DEPENDENCY" ) ]] || die "evaluate needs an existing --data file, or --dependency"
+    [[ -z "$CALIBRATION" || -f "$CALIBRATION" ]] || die "calibration file does not exist"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/evaluation" ;;
+  benchmark)
+    [[ -n "$GPU_RESOURCE" ]] || die "benchmark needs --gpu-resource"
+    [[ "$RESUME" == 0 ]] || die "benchmark does not support resume"
+    [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "benchmark needs an existing --checkpoint, or --dependency"
+    [[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] || die "benchmark needs an existing --data-dir"
+    [[ "$CATEGORY" == multiple || "$CATEGORY" == live_multiple ]] || die "category must be multiple or live_multiple"
+    [[ -f "$DATA_DIR/$CATEGORY.selector.jsonl" || -n "$DEPENDENCY" ]] || die "missing selector file for $CATEGORY, or use --dependency"
+    [[ -z "$CALIBRATION" || -f "$CALIBRATION" ]] || die "calibration file does not exist"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/bfcl-$CATEGORY" ;;
+  *) die "unknown stage: $STAGE" ;;
+esac
+
+[[ "$CPUS" =~ ^[0-9]+$ ]] && (( CPUS >= 1 && CPUS <= 128 )) || die "cpus-per-task must be 1..128"
+[[ "$MEMORY" =~ ^[0-9]+([KMGTP])?$ ]] || die "memory must look like 32G or 64000M"
+[[ "$WALL_TIME" =~ ^([0-9]+-)?[0-9]{1,2}:[0-9]{2}:[0-9]{2}$ ]] || die "time must be HH:MM:SS or D-HH:MM:SS"
+if [[ -n "$GPU_RESOURCE" ]]; then [[ "$GPU_RESOURCE" =~ ^[[:alnum:]_.:=+-]+$ ]] || die "invalid GPU resource syntax"; fi
+
+[[ -f "$PROJECT_DIR/pyproject.toml" && -f "$PROJECT_DIR/scripts/receipt.py" ]] || die "not a project checkout"
+for executable in sbatch squeue scontrol sacct srun python3 uv; do
+  if [[ "$executable" == uv && -n "$ENV_SCRIPT" ]]; then continue; fi
+  command -v "$executable" >/dev/null 2>&1 || die "required executable is unavailable: $executable"
+done
+if [[ -n "$ENV_SCRIPT" ]]; then command -v uv >/dev/null 2>&1 || die "uv is unavailable after loading --env-script"; fi
+[[ -w "$PROJECT_DIR" ]] || die "project directory is not writable"
+
+if [[ "$STAGE" == train || "$STAGE" == prepare-model ]]; then
+  python3 - "$CONFIG" <<'PY'
+import json, sys
+from pathlib import Path
+config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+required = {"model_name", "model_revision", "architecture", "projection_dim", "tau", "epochs", "batch_size"}
+missing = required - config.keys()
+if missing: raise SystemExit(f"config missing fields: {', '.join(sorted(missing))}")
+if config["architecture"] not in {"shared_tied", "shared_heads", "separate"}: raise SystemExit("unsupported architecture")
+import re
+if not re.fullmatch(r"[0-9a-f]{40}", str(config["model_revision"])): raise SystemExit("model_revision must be a full 40-character commit SHA")
+if config["epochs"] < 1 or config["batch_size"] < 1 or config["tau"] <= 0: raise SystemExit("invalid training values")
+PY
+fi
+if [[ "$STAGE" == train || "$STAGE" == calibrate || "$STAGE" == evaluate || "$STAGE" == benchmark ]]; then
+  [[ -f "$MODEL_MANIFEST" || -n "$DEPENDENCY" ]] || die "pinned model cache is missing; run prepare-model or pass its job ID with --dependency"
+  if [[ "$STAGE" == train && -f "$MODEL_MANIFEST" ]]; then
+    python3 - "$CONFIG" "$MODEL_MANIFEST" <<'PY'
+import json, sys
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+manifest = json.load(open(sys.argv[2], encoding="utf-8"))
+if config.get("model_name") != manifest.get("model_name") or config.get("model_revision") != manifest.get("revision"):
+    raise SystemExit("prepared model cache does not match this training config")
+PY
+  fi
+fi
+python3 - "$PROJECT_DIR" "$MIN_FREE_GIB" <<'PY'
+import shutil, sys
+free = shutil.disk_usage(sys.argv[1]).free / (1024**3)
+required = float(sys.argv[2])
+if free < required: raise SystemExit(f"only {free:.1f} GiB available; {required:.1f} GiB required")
+PY
+
+if [[ "$STAGE" == train && "$RESUME" == 1 ]]; then
+  [[ "$OUTPUT_DIR_SET" == 1 && -d "$OUTPUT_DIR" ]] || die "resume requires an explicit existing --output-dir"
+  RUN_DIR="$(python3 "$PROJECT_DIR/scripts/receipt.py" within --root "$PROJECT_DIR" --path "$OUTPUT_DIR")"
+  [[ -f "$RUN_DIR/checkpoints/last.pt" && -f "$RUN_DIR/run-manifest.json" && -f "$RUN_DIR/config.json" ]] || die "resume run lacks checkpoint, manifest, or config snapshot"
+  cmp -s "$CONFIG" "$RUN_DIR/config.json" || die "resume config differs from saved config"
+  python3 - "$RUN_DIR" "$DATA_DIR" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+run_dir, data_dir = map(Path, sys.argv[1:])
+manifest = json.loads((run_dir / "run-manifest.json").read_text(encoding="utf-8"))
+if manifest.get("data_dir") != str(data_dir.resolve()):
+    raise SystemExit("resume data directory differs from the original run")
+for name in ("train.jsonl", "validation.jsonl"):
+    path = data_dir / name
+    if not path.is_file():
+        raise SystemExit(f"resume input is missing: {path}")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != manifest.get("split_sha256", {}).get(name):
+        raise SystemExit(f"resume input changed since the original run: {name}")
+PY
+else
+  OUTPUT_DIR="$(python3 "$PROJECT_DIR/scripts/receipt.py" within --root "$PROJECT_DIR" --path "$OUTPUT_DIR")"
+  RUN_DIR="$(python3 "$PROJECT_DIR/scripts/receipt.py" reserve --base "$OUTPUT_DIR")"
+fi
+
+if [[ "$STAGE" == train && "$RESUME" == 0 ]]; then
+  cp "$CONFIG" "$RUN_DIR/config.json.tmp"
+  mv "$RUN_DIR/config.json.tmp" "$RUN_DIR/config.json"
+  python3 - "$RUN_DIR" "$DATA_DIR" <<'PY'
+import hashlib, json, sys, time
+from pathlib import Path
+run_dir, data_dir = map(Path, sys.argv[1:])
+config_path = run_dir / "config.json"
+manifest = {
+    "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+    "config_snapshot": str(config_path.resolve()),
+    "data_dir": str(data_dir.resolve()),
+    "data_manifest": str((data_dir / "manifest.json").resolve()) if (data_dir / "manifest.json").is_file() else None,
+    "data_manifest_sha256": hashlib.sha256((data_dir / "manifest.json").read_bytes()).hexdigest() if (data_dir / "manifest.json").is_file() else None,
+    "split_sha256": {
+        name: hashlib.sha256((data_dir / name).read_bytes()).hexdigest()
+        for name in ("train.jsonl", "validation.jsonl")
+        if (data_dir / name).is_file()
+    },
+}
+temporary = run_dir / "run-manifest.json.tmp"
+temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+temporary.replace(run_dir / "run-manifest.json")
+PY
+  CONFIG="$RUN_DIR/config.json"
+fi
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+TOKEN="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+SUBMISSION_DIR="$PROJECT_DIR/logs/submissions/$STAGE-$STAMP-$TOKEN"
+mkdir -p "$SUBMISSION_DIR"
+RECEIPT="$SUBMISSION_DIR/receipt.json"
+LOG_OUT="$SUBMISSION_DIR/${STAGE}-${STAMP}-%j.out"
+LOG_ERR="$SUBMISSION_DIR/${STAGE}-${STAMP}-%j.err"
+case "$STAGE" in
+  setup) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/setup.sbatch" ;;
+  prepare-xlam) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/prepare_xlam.sbatch" ;;
+  prepare-bfcl) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/prepare_bfcl.sbatch" ;;
+  prepare-model) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/prepare_model.sbatch" ;;
+  preflight) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/preflight.sbatch" ;;
+  train) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/train.sbatch" ;;
+  calibrate) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/calibrate.sbatch" ;;
+  evaluate) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/evaluate.sbatch" ;;
+  benchmark) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/benchmark.sbatch" ;;
+esac
+[[ -f "$SBATCH_SCRIPT" ]] || die "missing Slurm entry point: $SBATCH_SCRIPT"
+
+COMMAND_JSON="$(python3 - "$STAGE" "$PROJECT_DIR" "$ACCOUNT" "$PARTITION" "$GPU_RESOURCE" "$CPUS" "$MEMORY" "$WALL_TIME" "$DEPENDENCY" "$CONFIG" "$DATA_DIR" "$INPUT_JSON" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CATEGORY" "$CALIBRATION" "$BM25_NEGATIVES" "$REVISION" "$RESUME" "$ENV_SCRIPT" "$MODEL_MANIFEST" <<'PY'
+import json, sys
+(stage, project, account, partition, gpu, cpus, memory, wall, dependency, config,
+ data_dir, input_json, output_dir, checkpoint, data, category, calibration,
+ bm25, revision, resume, environment_script, model_manifest) = sys.argv[1:]
+print(json.dumps({
+    "stage": stage,
+    "project_dir": project,
+    "environment_script": environment_script or None,
+    "model_cache_manifest": model_manifest,
+    "sbatch": {"account": account, "partition": partition, "gpu_resource": gpu or None,
+               "cpus_per_task": cpus, "memory": memory, "time": wall,
+               "afterok_job_id": dependency or None},
+    "arguments": {"config": config or None, "data_dir": data_dir or None,
+                  "input_json": input_json or None, "output_dir": output_dir,
+                  "checkpoint": checkpoint or None, "data": data or None,
+                  "category": category or None, "calibration": calibration or None,
+                  "bm25_negatives": int(bm25), "revision": revision,
+                  "resume": bool(int(resume))},
+}))
+PY
+)"
+python3 "$PROJECT_DIR/scripts/receipt.py" init --path "$RECEIPT" --token "$TOKEN" --stage "$STAGE" \
+  --submitted-at "$STAMP" --project-dir "$PROJECT_DIR" --run-dir "$RUN_DIR" \
+  --command-json "$COMMAND_JSON" --log-out "$LOG_OUT" --log-err "$LOG_ERR"
+
+sbatch_args=(--parsable --comment "csd:$TOKEN" --account "$ACCOUNT" --partition "$PARTITION"
+  --cpus-per-task "$CPUS" --mem "$MEMORY" --time "$WALL_TIME" --chdir "$PROJECT_DIR"
+  --output "$LOG_OUT" --error "$LOG_ERR" --export=ALL)
+[[ -z "$GPU_RESOURCE" ]] || sbatch_args+=(--gres="$GPU_RESOURCE")
+[[ -z "$DEPENDENCY" ]] || sbatch_args+=(--dependency="afterok:${DEPENDENCY//,/:}")
+[[ "$STAGE" != train ]] || sbatch_args+=(--signal=B:USR1@300)
+case "$STAGE" in
+  setup) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR") ;;
+  prepare-xlam) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$RUN_DIR" "$BM25_NEGATIVES" "$INPUT_JSON") ;;
+  prepare-bfcl) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$RUN_DIR" "$REVISION") ;;
+  prepare-model) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CONFIG" "$MODEL_MANIFEST") ;;
+  preflight) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR") ;;
+  train) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CONFIG" "$DATA_DIR" "$RESUME") ;;
+  calibrate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH") ;;
+  evaluate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CALIBRATION") ;;
+  benchmark) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_DIR" "$CATEGORY" "$CALIBRATION") ;;
+esac
+
+echo "Submitting $STAGE; resolved output: $RUN_DIR"
+if ! sbatch_output="$(sbatch "${sbatch_args[@]}" "$SBATCH_SCRIPT" "${stage_args[@]}" 2>&1)"; then
+  python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED \
+    --reason "sbatch returned an ambiguous failure: $sbatch_output" --if-nonterminal
+  echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Receipt: $RECEIPT" >&2
+  exit 1
+fi
+JOB_ID="${sbatch_output%%;*}"
+[[ "$JOB_ID" =~ ^[0-9]+$ ]] || {
+  python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED \
+    --reason "unrecognized sbatch response: $sbatch_output" --if-nonterminal
+  echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Receipt: $RECEIPT" >&2
+  exit 1
+}
+python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state SUBMITTED --job-id "$JOB_ID" --if-nonterminal
+LOG_OUT="${LOG_OUT//%j/$JOB_ID}"; LOG_ERR="${LOG_ERR//%j/$JOB_ID}"
+echo "JOB_ID=$JOB_ID"; echo "RUN_DIR=$RUN_DIR"; echo "RECEIPT=$RECEIPT"; echo "LOG_OUT=$LOG_OUT"; echo "LOG_ERR=$LOG_ERR"
+START_MARKER="$RECEIPT.started.json"
+
+running_seen=0 query_failures=0
+deadline=$(( $(date +%s) + STARTUP_TIMEOUT ))
+while (( $(date +%s) < deadline )); do
+  if queue_output="$(squeue -h -j "$JOB_ID" -o '%T|%R' 2>&1)"; then
+    query_failures=0
+    if [[ -n "$queue_output" ]]; then
+      queue_state="${queue_output%%|*}"; queue_reason="${queue_output#*|}"
+      [[ "$queue_state" != RUNNING ]] || running_seen=1
+      if [[ -f "$START_MARKER" && "$running_seen" == 1 ]]; then
+        started_state="$(python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state STARTED \
+          --job-id "$JOB_ID" --marker "$START_MARKER" --if-nonterminal --print-state)"
+        case "$started_state" in
+          SUCCEEDED) echo "Job completed during startup monitoring; receipt: $RECEIPT"; exit 0 ;;
+          FAILED|PREEMPTED) echo "Job ended during startup monitoring with state $started_state; receipt: $RECEIPT" >&2; exit 1 ;;
+          *) echo "APPLICATION STARTED. Receipt: $RECEIPT"; exit 0 ;;
+        esac
+      fi
+      if [[ "$queue_state" == PENDING || "$queue_state" == CONFIGURING ]]; then
+        python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state PENDING --job-id "$JOB_ID" --reason "$queue_reason" --if-nonterminal
+      fi
+    else
+      acct_output=""
+      if acct_output="$(sacct --parsable2 -n -X -j "$JOB_ID" --format=State,ExitCode 2>&1)" && [[ -n "$acct_output" ]]; then
+        acct_line="$(printf '%s\n' "$acct_output" | head -n 1 | tr -d '[:space:]')"
+        acct_state="${acct_line%%|*}"; acct_state="${acct_state%%+}"
+        case "$acct_state" in
+          COMPLETED|FAILED|CANCELLED|TIMEOUT|PREEMPTED|OUT_OF_MEMORY|NODE_FAIL|BOOT_FAIL|DEADLINE|REVOKED|SPECIAL_EXIT)
+            if [[ -f "$START_MARKER" ]]; then
+              scheduler_state=FAILED
+              if [[ "$acct_state" == COMPLETED && "${acct_line#*|}" == "0:0" ]]; then scheduler_state=SUCCEEDED; fi
+              if [[ "$acct_state" == PREEMPTED ]]; then scheduler_state=PREEMPTED; fi
+              receipt_state="$(python3 - "$RECEIPT" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("state", ""))
+PY
+)"
+              final_state="$scheduler_state"
+              if [[ "$scheduler_state" == FAILED && "$receipt_state" == PREEMPTED ]]; then final_state=PREEMPTED; fi
+              if [[ "$receipt_state" != "$final_state" ]]; then
+                python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state "$final_state" \
+                  --job-id "$JOB_ID" --marker "$START_MARKER" --reason "terminal Slurm state $acct_line"
+              fi
+              if [[ "$final_state" == SUCCEEDED ]]; then
+                echo "Job completed during startup monitoring; state: $final_state; Slurm state: $acct_line. Receipt: $RECEIPT"
+                exit 0
+              fi
+              echo "Job ended during startup monitoring; state: $final_state; Slurm state: $acct_line. Receipt: $RECEIPT" >&2
+              exit 1
+            fi
+            python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state FAILED --job-id "$JOB_ID" --reason "terminal Slurm state $acct_line before STARTED"
+            echo "Failed before application startup ($acct_line). Receipt: $RECEIPT" >&2
+            [[ ! -f "$LOG_ERR" ]] || tail -n 80 "$LOG_ERR" >&2
+            [[ ! -f "$LOG_OUT" ]] || tail -n 80 "$LOG_OUT" >&2
+            exit 1 ;;
+        esac
+      else
+        ((query_failures+=1))
+      fi
+    fi
+  else
+    ((query_failures+=1))
+  fi
+  if (( query_failures >= 5 )); then
+    python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED --job-id "$JOB_ID" --reason "scheduler queries failed repeatedly; do not resubmit blindly" --if-nonterminal
+    echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Receipt: $RECEIPT; inspect with squeue -j $JOB_ID and sacct -j $JOB_ID" >&2
+    exit 1
+  fi
+  sleep 5
+done
+
+queue_output="$(squeue -h -j "$JOB_ID" -o '%T|%R' 2>/dev/null || true)"
+if [[ -n "$queue_output" ]]; then
+  queue_state="${queue_output%%|*}"; queue_reason="${queue_output#*|}"
+  if [[ "$queue_state" == PENDING || "$queue_state" == CONFIGURING ]]; then
+    python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state PENDING --job-id "$JOB_ID" --reason "$queue_reason" --if-nonterminal
+    echo "Still $queue_state ($queue_reason); queued job was left in place. Receipt: $RECEIPT"; exit 0
+  fi
+  python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state RUNNING_STARTUP_UNVERIFIED --job-id "$JOB_ID" --reason "running without a valid STARTED marker before timeout" --if-nonterminal
+  echo "Job is running but application startup is unverified. Receipt: $RECEIPT" >&2; exit 1
+fi
+python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED --job-id "$JOB_ID" --reason "bounded monitor ended without scheduler or application evidence; do not resubmit blindly" --if-nonterminal
+echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Inspect job $JOB_ID, receipt $RECEIPT, logs $LOG_OUT and $LOG_ERR" >&2
+exit 1

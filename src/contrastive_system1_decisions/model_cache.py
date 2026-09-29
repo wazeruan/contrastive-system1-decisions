@@ -1,0 +1,51 @@
+"""CPU-side materialization of a pinned model revision for offline GPU jobs."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+from pathlib import Path
+from typing import Any
+
+from transformers import AutoModel, AutoTokenizer
+
+from .runtime import write_started_marker
+
+
+def prepare_model(config_path: str | Path, manifest_path: str | Path,
+                  started_marker: str | Path | None = None,
+                  run_dir: str | Path | None = None) -> dict[str, Any]:
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    model_name = str(config["model_name"])
+    revision = config.get("model_revision")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("model_revision must be a full 40-character commit SHA before preparing the cache")
+    if started_marker is not None:
+        write_started_marker(
+            started_marker,
+            Path(run_dir) if run_dir else Path(manifest_path).parent,
+            "prepare-model",
+            details={"model_name": model_name, "revision": revision},
+        )
+    # Load on CPU so downloads and initialization stay outside the timed GPU job.
+    tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision, use_fast=True)
+    model = AutoModel.from_pretrained(model_name, revision=revision)
+    result = {
+        "model_name": model_name,
+        "revision": revision,
+        "tokenizer_class": tokenizer.__class__.__name__,
+        "model_class": model.__class__.__name__,
+        "hidden_size": int(model.config.hidden_size),
+        "prepared_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "config_path": str(Path(config_path).resolve()),
+        "hf_home": os.environ.get("HF_HOME"),
+        "semantics": "cached pinned model/tokenizer for offline GPU allocations",
+    }
+    destination = Path(manifest_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, destination)
+    return result

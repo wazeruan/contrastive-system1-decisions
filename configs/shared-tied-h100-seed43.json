@@ -1,0 +1,19 @@
+{
+  "model_name": "microsoft/deberta-v3-base",
+  "model_revision": "ed468848c315a7cf6dd071cd02245664b25d0bd1",
+  "architecture": "shared_tied",
+  "projection_dim": 256,
+  "tau": 0.07,
+  "seed": 43,
+  "epochs": 5,
+  "early_stopping_patience": 2,
+  "batch_size": 4,
+  "eval_batch_size": 4,
+  "learning_rate": 2e-05,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+  "max_query_length": 192,
+  "max_action_length": 256,
+  "gradient_checkpointing": true,
+  "require_h100": true
+}

@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local credentials and cached datasets/model files
+.env
+.env.*
+!.env.example
+data/
+models/
+hf_cache/
+wandb/
+
+# Run outputs and scheduler artifacts
+runs/
+logs/
+*.out
+*.err
+*.log
+core.*
+.DS_Store
