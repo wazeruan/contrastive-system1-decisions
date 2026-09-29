@@ -201,10 +201,35 @@ verify_completed_job() {
 }
 
 verify_active_or_completed_job() {
-  local label="$1" job_id="$2" queue_output acct_output compact state exit_code
-  if ! queue_output="$(squeue -h -j "$job_id" -o '%T|%R' 2>&1)"; then
-    die "could not verify $label job $job_id with squeue: $queue_output"
-  fi
+  local label="$1" job_id="$2" queue_output acct_output compact state state_field exit_code queue_rc=0
+  queue_output="$(squeue -h -j "$job_id" -o '%T|%R' 2>&1)" || queue_rc=$?
+  case "$queue_output" in
+    "Invalid job id specified"|"slurm_load_jobs error: Invalid job id specified")
+      # Nibi may reject a completed job ID after it leaves the controller's
+      # active-job table. Fall through to accounting to determine its outcome.
+      queue_output=""
+      ;;
+    *)
+      (( queue_rc == 0 )) || die "could not verify $label job $job_id with squeue: $queue_output"
+      if [[ -n "$queue_output" ]]; then
+        [[ "$queue_output" != *$'\n'* && "$queue_output" == *"|"* && "${queue_output#*|}" != *"|"* ]] || \
+          die "unexpected squeue response for $label job $job_id: $queue_output"
+        state_field="${queue_output%%|*}"
+        if [[ "$state_field" =~ ^([[:alnum:]_.-]+[[:space:]]+)?([[:alnum:]_]+)$ ]]; then
+          state="${BASH_REMATCH[2]}"
+        else
+          die "unexpected squeue state field for $label job $job_id: $queue_output"
+        fi
+        case "$state" in
+          PENDING|RUNNING|SUSPENDED|COMPLETING|CONFIGURING|RESIZING|SIGNALING|STAGE_OUT|REQUEUED|REQUEUE_FED|REQUEUE_HOLD|REVOKED|RESV_DEL_HOLD|SPECIAL_EXIT|STOPPED|UPDATE_DB|EXPEDITING|LAUNCH_FAILED|RECONFIG_FAIL|POWER_UP_NODE)
+            ;;
+          *)
+            die "unexpected squeue state for $label job $job_id: $queue_output"
+            ;;
+        esac
+      fi
+      ;;
+  esac
   if [[ -n "$queue_output" ]]; then
     JOB_DISPOSITION=ACTIVE
     echo "Verified $label job $job_id is still queued or running ($queue_output)."
