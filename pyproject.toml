@@ -1,7 +1,7 @@
 [project]
 name = "contrastive-system1-decisions"
 version = "0.1.0"
-description = "A reproducible dual-encoder study for structured tool selection"
+description = "A reproducible unified-encoder contrastive study for structured tool selection"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
