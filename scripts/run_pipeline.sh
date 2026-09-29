@@ -96,6 +96,7 @@ if [[ -n "$ENV_SCRIPT" ]]; then base_args+=(--env-script "$ENV_SCRIPT"); fi
 if [[ -n "$PARTITION" ]]; then base_args+=(--partition "$PARTITION"); fi
 
 LAST_JOB_ID="" LAST_RUN_DIR="" LAST_RECEIPT="" UNVERIFIED_STAGES=""
+SETUP_DEPENDENCY="" XLAM_DEPENDENCY=""
 submit_stage() {
   local label="$1" output rc line receipt_state=""
   shift
@@ -130,7 +131,7 @@ PY
       UNVERIFIED_STAGES+="${UNVERIFIED_STAGES:+; }$label (job $LAST_JOB_ID; $LAST_RECEIPT)"
       echo "$label is confirmed RUNNING, but application startup is unverified. Later jobs will depend on its successful completion." >&2
     else
-      echo "Pipeline stopped at $label; inspect the stage receipt before resubmitting." >&2
+      echo "Pipeline stopped at $label; no later stage was submitted. Resolve the error above before retrying." >&2
       return "$rc"
     fi
   fi
@@ -148,6 +149,19 @@ submit_gpu_stage() {
   else
     submit_stage "$label" "$@"
   fi
+}
+
+verify_completed_job() {
+  local label="$1" job_id="$2" output compact state exit_code
+  if ! output="$(sacct --parsable2 -n -X -j "$job_id" --format=State,ExitCode 2>&1)"; then
+    die "could not verify $label job $job_id with sacct: $output"
+  fi
+  compact="$(printf '%s\n' "$output" | head -n 1 | tr -d '[:space:]')"
+  IFS='|' read -r state exit_code <<< "$compact"
+  state="${state%%+}"
+  [[ "$state" == COMPLETED && "$exit_code" == "0:0" ]] || \
+    die "$label job $job_id is not confirmed successful (sacct: ${compact:-no record})"
+  echo "Verified $label job $job_id completed successfully."
 }
 
 echo "Queueing the baseline pipeline under account $ACCOUNT."
@@ -213,31 +227,45 @@ for split in ("train", "validation", "calibration", "test"):
     if actual != expected:
         raise SystemExit(f"xLAM {split} count mismatch: manifest={expected}, file={actual}")
 PY
-  echo "Reusing setup job $SETUP_JOB_ID, xLAM job $XLAM_JOB_ID, and prepared data $XLAM_DIR."
+  verify_completed_job setup "$SETUP_JOB_ID"
+  verify_completed_job xLAM "$XLAM_JOB_ID"
+  echo "Reusing prepared data $XLAM_DIR. New stages will not depend on historical completed job IDs."
 else
   submit_stage setup "$SUBMIT" "${base_args[@]}" --stage setup
   SETUP_JOB_ID="$LAST_JOB_ID"
+  SETUP_DEPENDENCY="$SETUP_JOB_ID"
 
   # This is the only stage that needs the gated dataset credential.
   submit_stage prepare-xlam "$SUBMIT" "${base_args[@]}" --stage prepare-xlam \
     --dependency "$SETUP_JOB_ID" --bm25-negatives 0
   XLAM_JOB_ID="$LAST_JOB_ID" XLAM_DIR="$LAST_RUN_DIR"
+  XLAM_DEPENDENCY="$XLAM_JOB_ID"
   unset HF_TOKEN
 fi
 
-submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl \
-  --dependency "$SETUP_JOB_ID"
+if [[ -n "$SETUP_DEPENDENCY" ]]; then
+  submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl \
+    --dependency "$SETUP_DEPENDENCY"
+else
+  submit_stage prepare-bfcl "$SUBMIT" "${base_args[@]}" --stage prepare-bfcl
+fi
 BFCL_JOB_ID="$LAST_JOB_ID" BFCL_DIR="$LAST_RUN_DIR"
 
-submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
-  --config "$CONFIG" --dependency "$SETUP_JOB_ID"
+if [[ -n "$SETUP_DEPENDENCY" ]]; then
+  submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
+    --config "$CONFIG" --dependency "$SETUP_DEPENDENCY"
+else
+  submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
+    --config "$CONFIG"
+fi
 MODEL_JOB_ID="$LAST_JOB_ID"
 
 submit_gpu_stage preflight "$SUBMIT" "${base_args[@]}" \
   --stage preflight --dependency "$MODEL_JOB_ID"
 PREFLIGHT_JOB_ID="$LAST_JOB_ID"
 
-TRAIN_DEPENDENCIES="$XLAM_JOB_ID,$MODEL_JOB_ID,$PREFLIGHT_JOB_ID"
+TRAIN_DEPENDENCIES="$MODEL_JOB_ID,$PREFLIGHT_JOB_ID"
+[[ -z "$XLAM_DEPENDENCY" ]] || TRAIN_DEPENDENCIES="$XLAM_DEPENDENCY,$TRAIN_DEPENDENCIES"
 submit_gpu_stage train "$SUBMIT" "${base_args[@]}" --stage train \
   --config "$CONFIG" --data-dir "$XLAM_DIR" --dependency "$TRAIN_DEPENDENCIES"
 TRAIN_JOB_ID="$LAST_JOB_ID" TRAIN_DIR="$LAST_RUN_DIR"
@@ -263,7 +291,7 @@ cat <<SUMMARY
 
 Pipeline queued with afterok dependencies. Jobs run only after their required predecessors succeed.
   setup:          $SETUP_JOB_ID
-  xLAM download:  $XLAM_JOB_ID  ($XLAM_DIR)
+  xLAM data:      $XLAM_JOB_ID  ($XLAM_DIR)
   BFCL download:  $BFCL_JOB_ID  ($BFCL_DIR)
   model download: $MODEL_JOB_ID
   H100 preflight: $PREFLIGHT_JOB_ID

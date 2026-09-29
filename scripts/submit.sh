@@ -343,9 +343,16 @@ if (( sbatch_rc != 0 )); then
       --job-id "$JOB_ID" --reason "sbatch exited $sbatch_rc with response: $sbatch_output" --if-nonterminal
     echo "UNKNOWN/UNVERIFIED; possible job ID $JOB_ID. Do not resubmit blindly. Receipt: $RECEIPT" >&2
   else
-    python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED \
-      --reason "sbatch returned an ambiguous failure: $sbatch_output" --if-nonterminal
-    echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Receipt: $RECEIPT" >&2
+    if [[ "$sbatch_output" == *"Batch job submission failed:"* ]]; then
+      python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state SUBMISSION_REJECTED \
+        --reason "$sbatch_output" --if-nonterminal
+      echo "Slurm rejected $STAGE; no job was queued. Reason: $sbatch_output" >&2
+      echo "Diagnostic record: $RECEIPT" >&2
+    else
+      python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state UNKNOWN/UNVERIFIED \
+        --reason "sbatch returned an ambiguous failure: $sbatch_output" --if-nonterminal
+      echo "UNKNOWN/UNVERIFIED. Do not resubmit blindly. Diagnostic record: $RECEIPT" >&2
+    fi
   fi
   exit 1
 fi

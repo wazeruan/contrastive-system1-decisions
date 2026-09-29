@@ -72,7 +72,7 @@ def command_update(args: argparse.Namespace) -> None:
     with lock_path.open("a", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         value = load(path)
-        terminal_states = {"SUCCEEDED", "FAILED", "PREEMPTED"}
+        terminal_states = {"SUCCEEDED", "FAILED", "PREEMPTED", "SUBMISSION_REJECTED"}
         if args.if_nonterminal and value.get("state") in terminal_states:
             if args.print_state:
                 print(value["state"])
