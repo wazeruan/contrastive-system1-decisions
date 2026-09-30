@@ -80,6 +80,8 @@ If xLAM preparation completed but the pipeline wrapper stopped before submitting
 
 The BFCL arguments are optional as a pair. The continuation validates completed Slurm states and prepared data, then submits any missing data/model preparation, H100 preflight, training, calibration, and evaluations with `afterok` dependencies.
 
+If setup and xLAM preparation completed but the pipeline stopped before later stages, add `--resume-after-setup` to reuse the successful setup job and continue with model preparation without queueing setup again. The setup and xLAM job IDs, plus any supplied BFCL job ID, need successful `sacct` records; the xLAM data and any reused BFCL data must exist. This mode always starts a fresh training run later in the chain.
+
 If model preparation and H100 preflight have already been submitted, resume at training and reuse those jobs instead of submitting them again:
 
 ```bash

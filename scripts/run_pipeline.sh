@@ -7,6 +7,7 @@ ACCOUNT="" PARTITION="" GPU_RESOURCE="" ENV_SCRIPT=""
 CONFIG="" CONFIG_SET=0
 CONTINUE_AFTER_XLAM=0 EXISTING_SETUP_JOB_ID="" EXISTING_XLAM_JOB_ID="" EXISTING_XLAM_DIR=""
 EXISTING_BFCL_JOB_ID="" EXISTING_BFCL_DIR=""
+RESUME_AFTER_SETUP=0
 RESUME_AFTER_PREFLIGHT=0 EXISTING_MODEL_JOB_ID="" EXISTING_PREFLIGHT_JOB_ID=""
 
 usage() {
@@ -25,6 +26,9 @@ To continue after an already completed xLAM preparation, pass
 --continue-after-xlam, --setup-job-id, --xlam-job-id, and --xlam-dir. The script
 validates the prepared files, refreshes the Python environment, and resumes with
 BFCL/model preparation. Add --bfcl-job-id and --bfcl-dir to reuse completed BFCL data.
+If setup itself has already completed and you want to continue without submitting
+setup again, add --resume-after-setup; setup, xLAM, and any supplied BFCL job must
+be confirmed successful.
 To resume after model preparation and H100 preflight, add --resume-after-preflight,
 --model-job-id, and --preflight-job-id. This mode also requires the completed
 BFCL data so no earlier pipeline stage needs to be submitted again. Use it only
@@ -45,6 +49,7 @@ Options:
   --xlam-dir PATH         Existing xLAM dataset directory required by --continue-after-xlam
   --bfcl-job-id ID        Optional successful BFCL preparation job to reuse
   --bfcl-dir PATH         Existing BFCL data directory required with --bfcl-job-id
+  --resume-after-setup   Reuse a successful setup job and continue with model preparation
   --resume-after-preflight Reuse existing model/preflight jobs and resume at training
   --model-job-id ID       Existing active or successful model preparation job
   --preflight-job-id ID   Existing active or successful H100 preflight job
@@ -79,6 +84,7 @@ while (($#)); do
       esac
       ;;
     --continue-after-xlam) CONTINUE_AFTER_XLAM=1; shift ;;
+    --resume-after-setup) RESUME_AFTER_SETUP=1; CONTINUE_AFTER_XLAM=1; shift ;;
     --resume-after-preflight) RESUME_AFTER_PREFLIGHT=1; CONTINUE_AFTER_XLAM=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -102,6 +108,7 @@ else
   unset HF_TOKEN
 fi
 if [[ "$RESUME_AFTER_PREFLIGHT" == 1 ]]; then
+  [[ "$RESUME_AFTER_SETUP" == 0 ]] || die "--resume-after-setup and --resume-after-preflight cannot be combined"
   [[ "$EXISTING_MODEL_JOB_ID" =~ ^[0-9]+$ ]] || die "--resume-after-preflight requires numeric --model-job-id"
   [[ "$EXISTING_PREFLIGHT_JOB_ID" =~ ^[0-9]+$ ]] || die "--resume-after-preflight requires numeric --preflight-job-id"
   [[ "$EXISTING_BFCL_JOB_ID" =~ ^[0-9]+$ && -n "$EXISTING_BFCL_DIR" ]] || \
@@ -347,7 +354,9 @@ for category in ("multiple", "live_multiple"):
 PY
     echo "Reusing BFCL data $BFCL_DIR from job $BFCL_JOB_ID."
   fi
-  if [[ "$RESUME_AFTER_PREFLIGHT" == 0 ]]; then
+  if [[ "$RESUME_AFTER_SETUP" == 1 ]]; then
+    echo "Reusing successful setup job $SETUP_JOB_ID; continuing with model preparation."
+  elif [[ "$RESUME_AFTER_PREFLIGHT" == 0 ]]; then
     echo "Reusing prepared xLAM data $XLAM_DIR. Refreshing the environment from the current lockfile."
     submit_stage setup "$SUBMIT" "${base_args[@]}" --stage setup
     SETUP_JOB_ID="$LAST_JOB_ID"
