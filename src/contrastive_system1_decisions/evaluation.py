@@ -13,6 +13,7 @@ import torch
 
 from .calibration import collect_logits, load_model
 from .data import DecisionExample, download_bfcl, load_bfcl_category, read_jsonl, write_jsonl
+from .model import forward_precision
 from .runtime import preflight_gpu, write_started_marker
 
 
@@ -101,6 +102,7 @@ def evaluate_jsonl(checkpoint: str | Path, data_path: str | Path, output_path: s
     result = _metrics(logits, examples, temperature)
     result["checkpoint"] = str(Path(checkpoint).resolve())
     result["data"] = str(Path(data_path).resolve())
+    result["forward_precision"] = forward_precision(config, device)
     _write_result(result, output_path)
     return result
 
@@ -159,7 +161,8 @@ def evaluate_bfcl(checkpoint: str | Path, data_dir: str | Path, category: str,
     result = _metrics(logits, examples, temperature)
     result.update({"benchmark": "BFCL V3 selector slice", "category": category,
                    "checkpoint": str(Path(checkpoint).resolve()),
-                   "data": str(examples_path.resolve())})
+                   "data": str(examples_path.resolve()),
+                   "forward_precision": forward_precision(config, device)})
     _write_result(result, output_path)
     return result
 

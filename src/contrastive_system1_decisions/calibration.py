@@ -11,7 +11,7 @@ import torch
 from torch.nn import functional as F
 
 from .data import DecisionExample, read_jsonl
-from .model import DualEncoderScorer, load_tokenizer
+from .model import DualEncoderScorer, bf16_autocast_enabled, forward_precision, load_tokenizer
 from .runtime import preflight_gpu, write_started_marker
 
 
@@ -47,8 +47,7 @@ def collect_logits(
         with torch.autocast(
             device_type="cuda",
             dtype=torch.bfloat16,
-            enabled=(device.type == "cuda" and bool(config.get("use_bf16", True))
-                     and torch.cuda.is_bf16_supported()),
+            enabled=bf16_autocast_enabled(config, device),
         ):
             logits = model.score_groups(
                 [row.query for row in batch],
@@ -138,6 +137,7 @@ def fit_temperature(checkpoint: str | Path, data_path: str | Path, output_path: 
     result = {
         "temperature": temperature,
         "examples": len(examples),
+        "forward_precision": forward_precision(config, device),
         "nll_before": before,
         "nll_after": after,
         "checkpoint": str(Path(checkpoint).resolve()),

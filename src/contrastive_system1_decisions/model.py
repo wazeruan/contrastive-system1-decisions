@@ -16,6 +16,18 @@ from transformers import AutoModel, AutoTokenizer
 ARCHITECTURES = ("shared_tied", "shared_heads", "separate")
 
 
+def bf16_autocast_enabled(config: dict[str, object], device: torch.device) -> bool:
+    return (
+        device.type == "cuda"
+        and bool(config.get("use_bf16", True))
+        and torch.cuda.is_bf16_supported()
+    )
+
+
+def forward_precision(config: dict[str, object], device: torch.device) -> str:
+    return "BF16 autocast" if bf16_autocast_enabled(config, device) else "FP32"
+
+
 def verify_prepared_model(model_name: str, revision: str | None) -> None:
     """Require the CPU-prepared pinned model snapshot for offline Slurm jobs."""
     offline_values = {"1", "true", "yes"}

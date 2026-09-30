@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 STAGE="" ACCOUNT="" PARTITION="" GPU_RESOURCE="" RESOURCE_PROFILE="" GPU_COUNT=0 CONFIG="" DATA_DIR="" INPUT_JSON=""
 OUTPUT_DIR="" OUTPUT_DIR_SET=0 CHECKPOINT="" DATA_PATH="" CALIBRATION="" CATEGORY="" REVISION="main"
 ENV_SCRIPT=""
-BM25_NEGATIVES=0 RESUME=0 CPUS="" MEMORY="" WALL_TIME="" STARTUP_TIMEOUT=180 MIN_FREE_GIB=15
+BM25_NEGATIVES=0 RESUME=0 CPUS="" MEMORY="128G" WALL_TIME="" STARTUP_TIMEOUT=180 MIN_FREE_GIB=15
 DEPENDENCY=""
 
 usage() {
@@ -20,6 +20,7 @@ Common: --project-dir PATH --env-script PATH --partition NAME --resource-profile
         --output-dir PATH --dependency JOB_ID --startup-timeout-seconds N --min-free-gib N --help
         GPU stages use the profile's exact scheduler request and runtime checks. The default is
         configs/resources/nibi-h100-80gb.json; select another profile for a different Alliance GPU.
+        Host RAM defaults to 128G for every stage; pass --memory to override it.
 
 Stage options:
   prepare-xlam:  [--input-json PATH] [--bm25-negatives N]
@@ -88,26 +89,26 @@ REQUESTED_DEPENDENCY="$DEPENDENCY"
 case "$STAGE" in
   setup)
     [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "setup does not accept GPU or resume options"
-    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-16G}"; WALL_TIME="${WALL_TIME:-02:00:00}"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-02:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/operations/setup" ;;
   prepare-xlam)
     [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "prepare-xlam is a CPU stage and cannot resume"
     [[ -z "$INPUT_JSON" || -f "$INPUT_JSON" ]] || die "input JSON does not exist: $INPUT_JSON"
-    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-24G}"; WALL_TIME="${WALL_TIME:-02:00:00}"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-02:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/data/processed/xlam" ;;
   prepare-bfcl)
     [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "prepare-bfcl is a CPU stage and cannot resume"
-    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-12G}"; WALL_TIME="${WALL_TIME:-01:00:00}"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-01:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/data/benchmark/bfcl" ;;
   prepare-model)
     [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "prepare-model is a CPU stage and cannot resume"
     [[ -n "$CONFIG" && -f "$CONFIG" ]] || die "prepare-model needs an existing --config"
-    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-24G}"; WALL_TIME="${WALL_TIME:-01:00:00}"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-01:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/model-cache-$(basename "${CONFIG%.json}")" ;;
   preflight)
     [[ "$RESUME" == 0 ]] || die "preflight cannot resume"
     GPU_COUNT=1
-    CPUS="${CPUS:-2}"; MEMORY="${MEMORY:-8G}"; WALL_TIME="${WALL_TIME:-00:10:00}"
+    CPUS="${CPUS:-2}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-00:10:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/preflight" ;;
   train)
     GPU_COUNT=1
@@ -117,14 +118,14 @@ case "$STAGE" in
     if [[ -z "$DEPENDENCY" ]]; then
       for split in train validation; do [[ -f "$DATA_DIR/$split.jsonl" ]] || die "missing $DATA_DIR/$split.jsonl"; done
     fi
-    CPUS="${CPUS:-8}"; MEMORY="${MEMORY:-64G}"; WALL_TIME="${WALL_TIME:-12:00:00}"
+    CPUS="${CPUS:-8}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-12:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/$(basename "${CONFIG%.json}")-seed42" ;;
   calibrate)
     GPU_COUNT=1
     [[ "$RESUME" == 0 ]] || die "calibrate does not support resume"
     [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "calibrate needs an existing --checkpoint, or --dependency"
     [[ -n "$DATA_PATH" && ( -f "$DATA_PATH" || -n "$DEPENDENCY" ) ]] || die "calibrate needs an existing --data file, or --dependency"
-    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/calibration" ;;
   evaluate)
     GPU_COUNT=1
@@ -132,7 +133,7 @@ case "$STAGE" in
     [[ -n "$CHECKPOINT" && ( -f "$CHECKPOINT" || -n "$DEPENDENCY" ) ]] || die "evaluate needs an existing --checkpoint, or --dependency"
     [[ -n "$DATA_PATH" && ( -f "$DATA_PATH" || -n "$DEPENDENCY" ) ]] || die "evaluate needs an existing --data file, or --dependency"
     [[ -z "$CALIBRATION" || -f "$CALIBRATION" || -n "$DEPENDENCY" ]] || die "calibration file does not exist, or use --dependency"
-    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/evaluation" ;;
   benchmark)
     GPU_COUNT=1
@@ -142,7 +143,7 @@ case "$STAGE" in
     [[ "$CATEGORY" == multiple || "$CATEGORY" == live_multiple ]] || die "category must be multiple or live_multiple"
     [[ -f "$DATA_DIR/$CATEGORY.selector.jsonl" || -n "$DEPENDENCY" ]] || die "missing selector file for $CATEGORY, or use --dependency"
     [[ -z "$CALIBRATION" || -f "$CALIBRATION" || -n "$DEPENDENCY" ]] || die "calibration file does not exist, or use --dependency"
-    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-32G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-03:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/bfcl-$CATEGORY" ;;
   *) die "unknown stage: $STAGE" ;;
 esac
@@ -232,19 +233,7 @@ if [[ -n "$ENV_SCRIPT" ]]; then command -v uv >/dev/null 2>&1 || die "uv is unav
 [[ -w "$PROJECT_DIR" ]] || die "project directory is not writable"
 
 if [[ "$STAGE" == train || "$STAGE" == prepare-model ]]; then
-  python3 - "$CONFIG" <<'PY'
-import json, sys
-from pathlib import Path
-config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-required = {"model_name", "model_revision", "architecture", "projection_dim", "tau", "epochs", "batch_size"}
-missing = required - config.keys()
-if missing: raise SystemExit(f"config missing fields: {', '.join(sorted(missing))}")
-if config["architecture"] not in {"shared_tied", "shared_heads", "separate"}: raise SystemExit("unsupported architecture")
-if not isinstance(config.get("require_h100", True), bool): raise SystemExit("require_h100 must be boolean")
-import re
-if not re.fullmatch(r"[0-9a-f]{40}", str(config["model_revision"])): raise SystemExit("model_revision must be a full 40-character commit SHA")
-if config["epochs"] < 1 or config["batch_size"] < 1 or config["tau"] <= 0: raise SystemExit("invalid training values")
-PY
+  python3 "$PROJECT_DIR/scripts/validate_config.py" "$CONFIG" || die "training config validation failed"
 fi
 if [[ "$STAGE" == train || "$STAGE" == calibrate || "$STAGE" == evaluate || "$STAGE" == benchmark ]]; then
   [[ -f "$MODEL_MANIFEST" || -n "$DEPENDENCY" ]] || die "pinned model cache is missing; run prepare-model or pass its job ID with --dependency"

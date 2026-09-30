@@ -75,6 +75,13 @@ def command_init(args: argparse.Namespace) -> None:
     pipeline_id = f"{stamp}-{uuid.uuid4().hex[:8]}"
     directory = base / pipeline_id
     directory.mkdir()
+    source_config = Path(args.config).expanduser().resolve()
+    config_bytes = source_config.read_bytes()
+    config_value = json.loads(config_bytes)
+    config_snapshot = directory / "config.json"
+    temporary_config = config_snapshot.with_name(f".{config_snapshot.name}.{os.getpid()}.tmp")
+    temporary_config.write_bytes(config_bytes)
+    os.replace(temporary_config, config_snapshot)
     resource_profile_path: str | None = None
     resource_profile_name: str | None = None
     resource_profile_sha256: str | None = None
@@ -94,7 +101,11 @@ def command_init(args: argparse.Namespace) -> None:
         "pipeline_id": pipeline_id,
         "project_dir": str(project),
         "account": args.account,
-        "config": str(Path(args.config).resolve()),
+        "config": str(source_config),
+        "config_snapshot": str(config_snapshot.resolve()),
+        "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        "configured_precision": "BF16 autocast requested" if config_value.get("use_bf16") else "FP32",
+        "host_memory": args.memory,
         "resource_profile": resource_profile_path,
         "resource_profile_name": resource_profile_name,
         "resource_profile_sha256": resource_profile_sha256,
@@ -107,6 +118,7 @@ def command_init(args: argparse.Namespace) -> None:
     print(f"PIPELINE_ID={pipeline_id}")
     print(f"PIPELINE_FILE={directory / 'pipeline.json'}")
     print(f"PIPELINE_DIR={directory}")
+    print(f"CONFIG_SNAPSHOT={config_snapshot.resolve()}")
     if resource_profile_path:
         print(f"RESOURCE_PROFILE={resource_profile_path}")
 
@@ -277,6 +289,12 @@ def print_status(manifest: dict[str, Any], stages: list[dict[str, Any]]) -> None
     print(f"Created:  {manifest.get('created_at_utc', 'unknown')}  Account: {manifest.get('account', 'unknown')}")
     if manifest.get("resource_profile_name"):
         print(f"GPU:      {manifest['resource_profile_name']} ({manifest.get('resource_profile')})")
+    if manifest.get("host_memory"):
+        print(f"Host RAM: {manifest['host_memory']} per stage (GPU VRAM is separate)")
+    if manifest.get("configured_precision"):
+        print(f"Configured precision: {manifest['configured_precision']}")
+    if manifest.get("config_snapshot"):
+        print(f"Config:   {manifest['config_snapshot']} (sha256 {str(manifest.get('config_sha256', ''))[:12]})")
     print(f"Run:      {Path(manifest['_path']).parent}")
     print("")
     print(f"{'STAGE':<18} {'STATE':<28} {'JOB':<12} OUTPUT / DETAILS")
@@ -313,6 +331,7 @@ def metric_line(path: Path) -> str:
     if not isinstance(value, dict):
         return ""
     keys = ("top1_tool_accuracy", "mrr", "nll", "brier", "ece_15_bins", "temperature",
+            "forward_precision", "precision",
             "nll_before", "nll_after", "examples", "best_validation_nll", "global_step")
     return ", ".join(f"{key}={value[key]}" for key in keys if key in value)
 
@@ -326,6 +345,10 @@ def command_results(args: argparse.Namespace) -> None:
     lines = [f"# Pipeline results: {manifest['pipeline_id']}", "",
              f"- **Created:** {manifest.get('created_at_utc', 'unknown')}",
              f"- **Account:** {manifest.get('account', 'unknown')}",
+             f"- **Host RAM:** {manifest.get('host_memory', 'unknown')} per stage",
+             f"- **Configured precision:** {manifest.get('configured_precision', 'unknown')}",
+             f"- **Config:** `{manifest.get('config_snapshot') or manifest.get('config') or 'unknown'}`",
+             f"- **Config SHA-256:** `{manifest.get('config_sha256', 'unknown')}`",
              f"- **GPU profile:** {manifest.get('resource_profile_name') or manifest.get('resource_profile') or 'unknown'}",
              f"- **Current state:** {manifest['current_state']}", "",
              "## Stage status", "", "| Stage | State | Job ID | Output |", "|---|---|---:|---|"]
@@ -396,6 +419,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--project-dir", required=True)
     init.add_argument("--account", required=True)
     init.add_argument("--config", required=True)
+    init.add_argument("--memory", required=True)
     init.add_argument("--resource-profile")
     init.set_defaults(function=command_init)
 

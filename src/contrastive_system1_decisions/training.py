@@ -17,7 +17,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from .data import DecisionExample, read_jsonl
-from .model import DualEncoderScorer, load_tokenizer
+from .model import DualEncoderScorer, forward_precision, load_tokenizer, bf16_autocast_enabled
 from .runtime import preflight_gpu, write_started_marker
 
 
@@ -88,10 +88,14 @@ def _record_run_manifest(config_path: Path, data_dir: Path, run_dir: Path) -> No
 
 def load_config(path: str | Path) -> dict[str, Any]:
     config = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError("config must be a JSON object")
     required = {"model_name", "model_revision", "architecture", "projection_dim", "tau"}
     missing = sorted(required - config.keys())
     if missing:
         raise ValueError(f"config is missing required keys: {', '.join(missing)}")
+    if not isinstance(config.get("use_bf16"), bool):
+        raise ValueError("config must explicitly set use_bf16 to true or false")
     return config
 
 
@@ -118,15 +122,32 @@ def _make_loader(path: Path, batch_size: int, shuffle: bool, seed: int) -> DataL
 def _loss_and_metrics(
     logits_by_row: list[torch.Tensor],
     batch: list[DecisionExample],
+    precision: str = "unknown",
 ) -> tuple[torch.Tensor, dict[str, float]]:
+    if len(logits_by_row) != len(batch):
+        raise ValueError("model returned a different number of score rows than examples")
     row_losses: list[torch.Tensor] = []
     correct = 0
     reciprocal_rank = 0.0
     nll_total = 0.0
     for logits, example in zip(logits_by_row, batch):
+        if logits.ndim != 1 or logits.numel() != len(example.candidates):
+            raise ValueError(f"{example.example_id}: score count does not match candidate count")
+        if not torch.isfinite(logits).all().item():
+            message = f"non-finite candidate scores for example {example.example_id} under {precision}"
+            if precision.startswith("BF16"):
+                message += "; retry with use_bf16=false to check for autocast overflow"
+            raise FloatingPointError(message)
         target = torch.tensor(example.target_weights, dtype=logits.dtype, device=logits.device)
+        if not torch.isfinite(target).all().item():
+            raise FloatingPointError(f"non-finite target weights for example {example.example_id}")
         log_probs = F.log_softmax(logits.float(), dim=0)
-        row_losses.append(-(target * log_probs).sum())
+        if not torch.isfinite(log_probs).all().item():
+            raise FloatingPointError(f"non-finite log probabilities for example {example.example_id}")
+        row_loss = -(target * log_probs).sum()
+        if not torch.isfinite(row_loss).item():
+            raise FloatingPointError(f"non-finite contrastive loss for example {example.example_id}")
+        row_losses.append(row_loss)
         correct += int(torch.argmax(logits).item() == int(torch.argmax(target).item()))
         order = torch.argsort(logits, descending=True)
         target_indices = torch.nonzero(target > 0, as_tuple=False).flatten().tolist()
@@ -135,18 +156,6 @@ def _loss_and_metrics(
         nll_total += float(-(target * log_probs).sum().detach().cpu().item())
     loss = torch.stack(row_losses).mean()
     if not torch.isfinite(loss).item():
-        for logits, example in zip(logits_by_row, batch):
-            target = torch.tensor(example.target_weights, dtype=logits.dtype, device=logits.device)
-            if not torch.isfinite(logits).all().item():
-                raise FloatingPointError(f"non-finite candidate scores for example {example.example_id}")
-            if not torch.isfinite(target).all().item():
-                raise FloatingPointError(f"non-finite target weights for example {example.example_id}")
-            log_probs = F.log_softmax(logits.float(), dim=0)
-            if not torch.isfinite(log_probs).all().item():
-                raise FloatingPointError(f"non-finite log probabilities for example {example.example_id}")
-            row_loss = -(target * log_probs).sum()
-            if not torch.isfinite(row_loss).item():
-                raise FloatingPointError(f"non-finite contrastive loss for example {example.example_id}")
         raise FloatingPointError("non-finite contrastive loss for the batch")
     count = len(batch)
     metrics = {
@@ -154,6 +163,8 @@ def _loss_and_metrics(
         "mrr": reciprocal_rank / count,
         "nll": nll_total / count,
     }
+    if not all(np.isfinite(value) for value in metrics.values()):
+        raise FloatingPointError("non-finite ranking or NLL metric for the batch")
     return loss, metrics
 
 
@@ -166,6 +177,8 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None,
 ) -> dict[str, float]:
     training = optimizer is not None
+    precision = forward_precision(config, device)
+    use_bf16 = bf16_autocast_enabled(config, device)
     model.train(training)
     totals = {"loss": 0.0, "accuracy": 0.0, "mrr": 0.0, "nll": 0.0}
     count = 0
@@ -178,8 +191,7 @@ def _run_epoch(
             with torch.autocast(
                 device_type="cuda",
                 dtype=torch.bfloat16,
-                enabled=(device.type == "cuda" and bool(config.get("use_bf16", True))
-                         and torch.cuda.is_bf16_supported()),
+                enabled=use_bf16,
             ):
                 logits = model.score_groups(
                     queries,
@@ -189,7 +201,7 @@ def _run_epoch(
                     int(config["max_action_length"]),
                     device,
                 )
-                loss, metrics = _loss_and_metrics(logits, batch)
+                loss, metrics = _loss_and_metrics(logits, batch, precision)
             if training:
                 loss.backward()
                 gradient_norm = torch.nn.utils.clip_grad_norm_(
@@ -205,7 +217,10 @@ def _run_epoch(
         count += batch_count
     if count == 0:
         raise RuntimeError("loader produced no batches")
-    return {name: value / count for name, value in totals.items()} | {"examples": count}
+    result = {name: value / count for name, value in totals.items()} | {"examples": count}
+    if not all(np.isfinite(result[name]) for name in totals):
+        raise FloatingPointError(f"epoch produced non-finite metrics under {precision}: {result}")
+    return result
 
 
 def _save_checkpoint(
@@ -261,6 +276,9 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
         _preflight_h100()
         device = torch.device("cuda")
 
+    precision = forward_precision(config, device)
+    print(f"Forward precision: {precision}", flush=True)
+
     tokenizer = load_tokenizer(config["model_name"], config.get("model_revision"))
     model = DualEncoderScorer(
         model_name=config["model_name"],
@@ -297,7 +315,7 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
     if started_marker is not None:
         _write_started_marker(Path(started_marker), destination, model,
                               require_h100=require_h100, gpu_profile=gpu_profile,
-                              gpu_profile_sha256=gpu_profile_sha256)
+                              gpu_profile_sha256=gpu_profile_sha256, precision=precision)
 
     history_path = destination / "history.jsonl"
     max_epochs = int(config["epochs"])
@@ -339,7 +357,8 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
                          best_validation_nll, destination)
         print(json.dumps(record), flush=True)
         if _STOP_REQUESTED:
-            _write_status(destination, "PREEMPTED", {"epoch": epoch + 1, "global_step": global_step})
+            _write_status(destination, "PREEMPTED", {"epoch": epoch + 1, "global_step": global_step,
+                                                       "precision": precision})
             return {"status": "PREEMPTED", "run_dir": str(destination), "global_step": global_step}
         if stale_epochs >= patience:
             break
@@ -348,7 +367,9 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
     if (not best_checkpoint.is_file() or best_checkpoint.stat().st_size == 0
             or not np.isfinite(best_validation_nll)):
         raise RuntimeError(f"training ended without a valid best checkpoint: {best_checkpoint}")
-    _write_status(destination, "SUCCEEDED", {"global_step": global_step, "best_validation_nll": best_validation_nll})
+    _write_status(destination, "SUCCEEDED", {"global_step": global_step,
+                                                "best_validation_nll": best_validation_nll,
+                                                "precision": precision})
     return {"status": "SUCCEEDED", "run_dir": str(destination), "global_step": global_step,
             "best_validation_nll": best_validation_nll}
 
@@ -360,7 +381,8 @@ def _preflight_h100(min_memory_gib: float = 75.0) -> dict[str, Any]:
 def _write_started_marker(path: Path, run_dir: Path, model: DualEncoderScorer,
                           require_h100: bool = True,
                           gpu_profile: str | Path | None = None,
-                          gpu_profile_sha256: str | None = None) -> None:
+                          gpu_profile_sha256: str | None = None,
+                          precision: str = "unknown") -> None:
     marker = write_started_marker(
         path,
         run_dir,
@@ -368,7 +390,8 @@ def _write_started_marker(path: Path, run_dir: Path, model: DualEncoderScorer,
         require_h100=require_h100 and gpu_profile is None,
         gpu_profile=gpu_profile,
         gpu_profile_sha256=gpu_profile_sha256,
-        details={"architecture": model.architecture, "model_name": model.model_name},
+        details={"architecture": model.architecture, "model_name": model.model_name,
+                 "precision": precision},
     )
     _write_status(path.parent, "STARTED", marker)
 

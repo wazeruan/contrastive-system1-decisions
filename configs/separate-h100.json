@@ -15,5 +15,6 @@
   "max_query_length": 192,
   "max_action_length": 256,
   "gradient_checkpointing": true,
-  "require_h100": true
+  "require_h100": true,
+  "use_bf16": false
 }

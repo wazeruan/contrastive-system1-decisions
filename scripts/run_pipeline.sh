@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-ACCOUNT="" PARTITION="" GPU_RESOURCE="" RESOURCE_PROFILE="" ENV_SCRIPT=""
+ACCOUNT="" PARTITION="" GPU_RESOURCE="" RESOURCE_PROFILE="" ENV_SCRIPT="" MEMORY="128G"
 CONFIG="" CONFIG_SET=0
 CONTINUE_AFTER_XLAM=0 EXISTING_SETUP_JOB_ID="" EXISTING_XLAM_JOB_ID="" EXISTING_XLAM_DIR=""
 EXISTING_BFCL_JOB_ID="" EXISTING_BFCL_DIR=""
@@ -44,6 +44,7 @@ Options:
   --config PATH           Training config (defaults to shared-heads-h100.json)
   --env-script PATH       Shared cluster environment setup script
   --partition NAME        Optional partition override for all stages
+  --memory SIZE           Host RAM requested by every stage (default: 128G)
   --resource-profile PATH GPU scheduler request and runtime validation profile
   --gpu-resource SPEC     Optional full GRES value for GPU stages
   --continue-after-xlam   Reuse an existing prepared xLAM dataset and jobs
@@ -69,7 +70,7 @@ die() { echo "run_pipeline: $*" >&2; exit 2; }
 
 while (($#)); do
   case "$1" in
-    --account|--project-dir|--config|--env-script|--partition|--gpu-resource|--resource-profile|--setup-job-id|--xlam-job-id|--xlam-dir|--bfcl-job-id|--bfcl-dir|--model-job-id|--preflight-job-id)
+    --account|--project-dir|--config|--env-script|--partition|--memory|--gpu-resource|--resource-profile|--setup-job-id|--xlam-job-id|--xlam-dir|--bfcl-job-id|--bfcl-dir|--model-job-id|--preflight-job-id)
       (($# >= 2)) || die "$1 needs a value"
       key="$1"; value="$2"; shift 2
       case "$key" in
@@ -78,6 +79,7 @@ while (($#)); do
         --config) CONFIG="$value"; CONFIG_SET=1 ;;
         --env-script) ENV_SCRIPT="$value" ;;
         --partition) PARTITION="$value" ;;
+        --memory) MEMORY="$value" ;;
         --gpu-resource) GPU_RESOURCE="$value" ;;
         --resource-profile) RESOURCE_PROFILE="$value" ;;
         --setup-job-id) EXISTING_SETUP_JOB_ID="$value" ;;
@@ -99,6 +101,7 @@ done
 
 [[ -n "$ACCOUNT" && "$ACCOUNT" =~ ^[[:alnum:]_.-]+$ ]] || die "valid --account is required"
 [[ -z "$PARTITION" || "$PARTITION" =~ ^[[:alnum:]_.-]+$ ]] || die "invalid --partition"
+[[ "$MEMORY" =~ ^[0-9]+([KMGTP])?$ ]] || die "memory must look like 128G or 131072M"
 [[ -z "$GPU_RESOURCE" || "$GPU_RESOURCE" =~ ^[[:alnum:]_.:=+-]+$ ]] || die "invalid GPU resource syntax"
 if [[ "$CONTINUE_AFTER_XLAM" == 0 ]]; then
   if [[ -z "$TOKEN_FOR_XLAM" ]]; then
@@ -136,6 +139,21 @@ elif [[ "$CONFIG" != /* ]]; then
   CONFIG="$PROJECT_DIR/$CONFIG"
 fi
 [[ -f "$CONFIG" ]] || die "training config does not exist: $CONFIG"
+python3 "$PROJECT_DIR/scripts/validate_config.py" "$CONFIG" || die "training config validation failed"
+CONFIG_IDENTITY="$(python3 - "$CONFIG" <<'PY'
+import json, sys
+from pathlib import Path
+config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(Path(sys.argv[1]).stem)
+print(config["seed"])
+PY
+)"
+mapfile -t CONFIG_IDENTITY_FIELDS <<< "$CONFIG_IDENTITY"
+(( ${#CONFIG_IDENTITY_FIELDS[@]} == 2 )) || die "could not resolve config run label"
+CONFIG_LABEL="${CONFIG_IDENTITY_FIELDS[0]}"
+CONFIG_SEED="${CONFIG_IDENTITY_FIELDS[1]}"
+TRAIN_OUTPUT_LABEL="$CONFIG_LABEL"
+[[ "$TRAIN_OUTPUT_LABEL" =~ -seed[0-9]+$ ]] || TRAIN_OUTPUT_LABEL="${TRAIN_OUTPUT_LABEL}-seed${CONFIG_SEED}"
 if [[ -z "$RESOURCE_PROFILE" ]]; then
   RESOURCE_PROFILE="$PROJECT_DIR/configs/resources/nibi-h100-80gb.json"
 elif [[ "$RESOURCE_PROFILE" != /* ]]; then
@@ -172,13 +190,16 @@ PIPELINE_TOOL="$PROJECT_DIR/scripts/project.py"
 base_args=(--project-dir "$PROJECT_DIR" --account "$ACCOUNT")
 if [[ -n "$ENV_SCRIPT" ]]; then base_args+=(--env-script "$ENV_SCRIPT"); fi
 if [[ -n "$PARTITION" ]]; then base_args+=(--partition "$PARTITION"); fi
+base_args+=(--memory "$MEMORY")
 
 pipeline_init="$(python3 "$PIPELINE_TOOL" init --project-dir "$PROJECT_DIR" --account "$ACCOUNT" \
-  --config "$CONFIG" --resource-profile "$RESOURCE_PROFILE")"
+  --config "$CONFIG" --memory "$MEMORY" --resource-profile "$RESOURCE_PROFILE")"
 PIPELINE_FILE="$(printf '%s\n' "$pipeline_init" | sed -n 's/^PIPELINE_FILE=//p')"
 PIPELINE_ID="$(printf '%s\n' "$pipeline_init" | sed -n 's/^PIPELINE_ID=//p')"
+CONFIG="$(printf '%s\n' "$pipeline_init" | sed -n 's/^CONFIG_SNAPSHOT=//p')"
 RESOURCE_PROFILE="$(printf '%s\n' "$pipeline_init" | sed -n 's/^RESOURCE_PROFILE=//p')"
-[[ -n "$PIPELINE_FILE" && -n "$PIPELINE_ID" && -n "$RESOURCE_PROFILE" ]] || die "could not create pipeline manifest and resource profile snapshot"
+[[ -n "$PIPELINE_FILE" && -n "$PIPELINE_ID" && -n "$CONFIG" && -n "$RESOURCE_PROFILE" ]] || \
+  die "could not create pipeline manifest and config/resource profile snapshots"
 LAST_PIPELINE_STAGE=""
 finish_pipeline() {
   local result=$?
@@ -564,10 +585,11 @@ else
 
   if [[ -n "$SETUP_DEPENDENCY" ]]; then
     submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
-      --config "$CONFIG" --dependency "$SETUP_DEPENDENCY"
+      --config "$CONFIG" --output-dir "$PROJECT_DIR/runs/model-cache-$CONFIG_LABEL" \
+      --dependency "$SETUP_DEPENDENCY"
   else
     submit_stage prepare-model "$SUBMIT" "${base_args[@]}" --stage prepare-model \
-      --config "$CONFIG"
+      --config "$CONFIG" --output-dir "$PROJECT_DIR/runs/model-cache-$CONFIG_LABEL"
   fi
   MODEL_JOB_ID="$LAST_JOB_ID"
 
@@ -584,7 +606,8 @@ TRAIN_DEPENDENCIES="$PREFLIGHT_DEPENDENCY"
 [[ -z "$MODEL_DEPENDENCY" ]] || TRAIN_DEPENDENCIES="${TRAIN_DEPENDENCIES:+$TRAIN_DEPENDENCIES,}$MODEL_DEPENDENCY"
 [[ -z "$XLAM_DEPENDENCY" ]] || TRAIN_DEPENDENCIES="$XLAM_DEPENDENCY,$TRAIN_DEPENDENCIES"
 submit_gpu_stage train "$SUBMIT" "${base_args[@]}" --stage train \
-  --config "$CONFIG" --data-dir "$XLAM_DIR" --dependency "$TRAIN_DEPENDENCIES"
+  --config "$CONFIG" --data-dir "$XLAM_DIR" \
+  --output-dir "$PROJECT_DIR/runs/$TRAIN_OUTPUT_LABEL" --dependency "$TRAIN_DEPENDENCIES"
 TRAIN_JOB_ID="$LAST_JOB_ID" TRAIN_DIR="$LAST_RUN_DIR"
 
 submit_gpu_stage calibrate "$SUBMIT" "${base_args[@]}" --stage calibrate \
