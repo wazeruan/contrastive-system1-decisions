@@ -16,6 +16,7 @@ DATA_PATH="$6"
 source "$PROJECT_DIR/scripts/job_common.sh"
 job_initialize calibrate "$PROJECT_DIR" "$RECEIPT_PATH" "$RUN_DIR"
 command -v uv >/dev/null 2>&1 || { echo "uv is not available on this cluster" >&2; exit 127; }
+[[ -s "$CHECKPOINT" ]] || { echo "required training checkpoint is missing or empty: $CHECKPOINT" >&2; exit 66; }
 job_run uv run --project "$PROJECT_DIR" --no-sync csd calibrate \
   --checkpoint "$CHECKPOINT" --data "$DATA_PATH" --output "$RUN_DIR/calibration.json" \
   --started-marker "$RECEIPT_PATH.started.json" --require-h100

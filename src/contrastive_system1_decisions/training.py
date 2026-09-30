@@ -282,6 +282,11 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
         train_metrics = _run_epoch(model, train_loader, tokenizer, device, config, optimizer)
         global_step += int(np.ceil(train_metrics["examples"] / int(config["batch_size"])))
         validation_metrics = _run_epoch(model, validation_loader, tokenizer, device, config, None)
+        validation_nll = float(validation_metrics["nll"])
+        if not np.isfinite(validation_nll):
+            raise RuntimeError(
+                f"validation NLL is non-finite at epoch {epoch + 1}: {validation_nll}"
+            )
         record = {
             "epoch": epoch + 1,
             "global_step": global_step,
@@ -293,8 +298,8 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
             stream.write(json.dumps(record) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
-        if validation_metrics["nll"] < best_validation_nll:
-            best_validation_nll = validation_metrics["nll"]
+        if validation_nll < best_validation_nll:
+            best_validation_nll = validation_nll
             _atomic_torch_save(
                 {"state_dict": model.state_dict(), "config": config},
                 destination / "checkpoints" / "best.pt",
@@ -313,6 +318,10 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
         if stale_epochs >= patience:
             break
 
+    best_checkpoint = destination / "checkpoints" / "best.pt"
+    if (not best_checkpoint.is_file() or best_checkpoint.stat().st_size == 0
+            or not np.isfinite(best_validation_nll)):
+        raise RuntimeError(f"training ended without a valid best checkpoint: {best_checkpoint}")
     _write_status(destination, "SUCCEEDED", {"global_step": global_step, "best_validation_nll": best_validation_nll})
     return {"status": "SUCCEEDED", "run_dir": str(destination), "global_step": global_step,
             "best_validation_nll": best_validation_nll}
