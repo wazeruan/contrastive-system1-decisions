@@ -95,9 +95,12 @@ def _mean_nll(logits: list[torch.Tensor], targets: list[torch.Tensor], temperatu
 
 def fit_temperature(checkpoint: str | Path, data_path: str | Path, output_path: str | Path,
                     batch_size: int = 32, started_marker: str | Path | None = None,
-                    require_h100: bool = False) -> dict[str, Any]:
-    if require_h100:
-        preflight_gpu(require_h100=True)
+                    require_h100: bool = False,
+                    gpu_profile: str | Path | None = None,
+                    gpu_profile_sha256: str | None = None) -> dict[str, Any]:
+    if require_h100 or gpu_profile is not None:
+        preflight_gpu(require_h100=require_h100 and gpu_profile is None, gpu_profile=gpu_profile,
+                      gpu_profile_sha256=gpu_profile_sha256)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, tokenizer, config = load_model(checkpoint, device)
     examples = read_jsonl(data_path)
@@ -108,8 +111,10 @@ def fit_temperature(checkpoint: str | Path, data_path: str | Path, output_path: 
             started_marker,
             Path(output_path).parent,
             "calibrate",
-            require_h100=require_h100,
+            require_h100=require_h100 and gpu_profile is None,
             details={"checkpoint": str(Path(checkpoint).resolve()), "examples": len(examples)},
+            gpu_profile=gpu_profile,
+            gpu_profile_sha256=gpu_profile_sha256,
         )
     logits, targets = collect_logits(model, tokenizer, examples, config, device, batch_size)
     initial = torch.tensor(0.0, requires_grad=True)

@@ -14,11 +14,14 @@ RUN_DIR="$4"
 CONFIG="$5"
 DATA_DIR="$6"
 RESUME="$7"
+GPU_PROFILE="$8"
+GPU_PROFILE_SHA256="$9"
 STARTED_MARKER="$RECEIPT_PATH.started.json"
 source "$PROJECT_DIR/scripts/job_common.sh"
 job_initialize train "$PROJECT_DIR" "$RECEIPT_PATH" "$RUN_DIR"
 command -v uv >/dev/null 2>&1 || { echo "uv is not available on this cluster" >&2; exit 127; }
 command=(uv run --project "$PROJECT_DIR" --no-sync csd train
-  --config "$CONFIG" --data-dir "$DATA_DIR" --run-dir "$RUN_DIR" --started-marker "$STARTED_MARKER")
+  --config "$CONFIG" --data-dir "$DATA_DIR" --run-dir "$RUN_DIR" --started-marker "$STARTED_MARKER"
+  --gpu-profile "$GPU_PROFILE" --gpu-profile-sha256 "$GPU_PROFILE_SHA256")
 if [[ "$RESUME" == "1" ]]; then command+=(--resume); fi
 job_run "${command[@]}"

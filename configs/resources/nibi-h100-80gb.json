@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "Nibi H100 80GB",
+  "scheduler": {
+    "gpu_option": "--gpus",
+    "gpu_request": "h100:1",
+    "partition": null
+  },
+  "runtime": {
+    "require_cuda": true,
+    "device_name_contains": "H100",
+    "min_memory_gib": 75,
+    "min_free_memory_gib": 70,
+    "require_bf16": true
+  }
+}

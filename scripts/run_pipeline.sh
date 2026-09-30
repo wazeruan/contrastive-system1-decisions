@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-ACCOUNT="" PARTITION="" GPU_RESOURCE="" ENV_SCRIPT=""
+ACCOUNT="" PARTITION="" GPU_RESOURCE="" RESOURCE_PROFILE="" ENV_SCRIPT=""
 CONFIG="" CONFIG_SET=0
 CONTINUE_AFTER_XLAM=0 EXISTING_SETUP_JOB_ID="" EXISTING_XLAM_JOB_ID="" EXISTING_XLAM_DIR=""
 EXISTING_BFCL_JOB_ID="" EXISTING_BFCL_DIR=""
@@ -17,7 +17,7 @@ usage() {
 Usage: scripts/csd run --account ACCOUNT [options]
 
 Submits one baseline dependency chain:
-  setup -> xLAM/BFCL/model preparation -> H100 preflight -> train
+  setup -> xLAM/BFCL/model preparation -> GPU preflight -> train
         -> calibration -> xLAM test evaluation and BFCL live_multiple evaluation
 
 If HF_TOKEN is not already set, the interactive launcher asks for it securely.
@@ -31,7 +31,7 @@ BFCL/model preparation. Add --bfcl-job-id and --bfcl-dir to reuse completed BFCL
 If setup itself has already completed and you want to continue without submitting
 setup again, add --resume-after-setup; setup, xLAM, and any supplied BFCL job must
 be confirmed successful.
-To resume after model preparation and H100 preflight, add --resume-after-preflight,
+To resume after model preparation and GPU preflight, add --resume-after-preflight,
 --model-job-id, and --preflight-job-id. This mode also requires the completed
 BFCL data so no earlier pipeline stage needs to be submitted again. Use it only
 when no earlier training submission is still pending, running, or unverified.
@@ -44,6 +44,7 @@ Options:
   --config PATH           Training config (defaults to shared-heads-h100.json)
   --env-script PATH       Shared cluster environment setup script
   --partition NAME        Optional partition override for all stages
+  --resource-profile PATH GPU scheduler request and runtime validation profile
   --gpu-resource SPEC     Optional full GRES value for GPU stages
   --continue-after-xlam   Reuse an existing prepared xLAM dataset and jobs
   --setup-job-id ID       Successful setup job required by --continue-after-xlam
@@ -54,7 +55,7 @@ Options:
   --resume-after-setup   Reuse a successful setup job and continue with model preparation
   --resume-after-preflight Reuse existing model/preflight jobs and resume at training
   --model-job-id ID       Existing active or successful model preparation job
-  --preflight-job-id ID   Existing active or successful H100 preflight job
+  --preflight-job-id ID   Existing active or successful GPU preflight job
   --help                  Show this help
 
 After launch, use `scripts/csd status` and `scripts/csd results` to follow this run.
@@ -68,7 +69,7 @@ die() { echo "run_pipeline: $*" >&2; exit 2; }
 
 while (($#)); do
   case "$1" in
-    --account|--project-dir|--config|--env-script|--partition|--gpu-resource|--setup-job-id|--xlam-job-id|--xlam-dir|--bfcl-job-id|--bfcl-dir|--model-job-id|--preflight-job-id)
+    --account|--project-dir|--config|--env-script|--partition|--gpu-resource|--resource-profile|--setup-job-id|--xlam-job-id|--xlam-dir|--bfcl-job-id|--bfcl-dir|--model-job-id|--preflight-job-id)
       (($# >= 2)) || die "$1 needs a value"
       key="$1"; value="$2"; shift 2
       case "$key" in
@@ -78,6 +79,7 @@ while (($#)); do
         --env-script) ENV_SCRIPT="$value" ;;
         --partition) PARTITION="$value" ;;
         --gpu-resource) GPU_RESOURCE="$value" ;;
+        --resource-profile) RESOURCE_PROFILE="$value" ;;
         --setup-job-id) EXISTING_SETUP_JOB_ID="$value" ;;
         --xlam-job-id) EXISTING_XLAM_JOB_ID="$value" ;;
         --xlam-dir) EXISTING_XLAM_DIR="$value" ;;
@@ -134,6 +136,32 @@ elif [[ "$CONFIG" != /* ]]; then
   CONFIG="$PROJECT_DIR/$CONFIG"
 fi
 [[ -f "$CONFIG" ]] || die "training config does not exist: $CONFIG"
+if [[ -z "$RESOURCE_PROFILE" ]]; then
+  RESOURCE_PROFILE="$PROJECT_DIR/configs/resources/nibi-h100-80gb.json"
+elif [[ "$RESOURCE_PROFILE" != /* ]]; then
+  RESOURCE_PROFILE="$PROJECT_DIR/$RESOURCE_PROFILE"
+fi
+[[ -r "$RESOURCE_PROFILE" ]] || die "GPU resource profile is not readable: $RESOURCE_PROFILE"
+python3 - "$RESOURCE_PROFILE" <<'PY' || die "GPU resource profile is invalid: $RESOURCE_PROFILE"
+import json, math, re, sys
+from pathlib import Path
+profile = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(profile, dict) or profile.get("schema_version") != 1: raise SystemExit("schema_version must be 1")
+if not isinstance(profile.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}", profile["name"]): raise SystemExit("profile name must be a short, single-line label")
+scheduler, runtime = profile.get("scheduler"), profile.get("runtime")
+if not isinstance(scheduler, dict) or not isinstance(runtime, dict): raise SystemExit("scheduler/runtime objects are required")
+if scheduler.get("gpu_option") not in {"--gpus", "--gres"}: raise SystemExit("gpu_option must be --gpus or --gres")
+if not re.fullmatch(r"[A-Za-z0-9_.:=+-]+", str(scheduler.get("gpu_request", ""))): raise SystemExit("invalid gpu_request")
+partition = scheduler.get("partition")
+if partition and not re.fullmatch(r"[A-Za-z0-9_.-]+", str(partition)): raise SystemExit("invalid profile partition")
+for key in ("min_memory_gib", "min_free_memory_gib"):
+    value = runtime.get(key, 0)
+    if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0: raise SystemExit(f"invalid runtime.{key}")
+if not isinstance(runtime.get("require_cuda", True), bool): raise SystemExit("require_cuda must be boolean")
+if runtime.get("require_cuda", True) is not True: raise SystemExit("GPU pipeline profiles must require CUDA")
+if not isinstance(runtime.get("require_bf16", False), bool): raise SystemExit("require_bf16 must be boolean")
+if not isinstance(runtime.get("device_name_contains", ""), str): raise SystemExit("device_name_contains must be a string")
+PY
 if [[ -n "$ENV_SCRIPT" ]]; then
   [[ "$ENV_SCRIPT" == /* ]] || ENV_SCRIPT="$PROJECT_DIR/$ENV_SCRIPT"
   [[ -r "$ENV_SCRIPT" ]] || die "environment script is not readable: $ENV_SCRIPT"
@@ -145,10 +173,12 @@ base_args=(--project-dir "$PROJECT_DIR" --account "$ACCOUNT")
 if [[ -n "$ENV_SCRIPT" ]]; then base_args+=(--env-script "$ENV_SCRIPT"); fi
 if [[ -n "$PARTITION" ]]; then base_args+=(--partition "$PARTITION"); fi
 
-pipeline_init="$(python3 "$PIPELINE_TOOL" init --project-dir "$PROJECT_DIR" --account "$ACCOUNT" --config "$CONFIG")"
+pipeline_init="$(python3 "$PIPELINE_TOOL" init --project-dir "$PROJECT_DIR" --account "$ACCOUNT" \
+  --config "$CONFIG" --resource-profile "$RESOURCE_PROFILE")"
 PIPELINE_FILE="$(printf '%s\n' "$pipeline_init" | sed -n 's/^PIPELINE_FILE=//p')"
 PIPELINE_ID="$(printf '%s\n' "$pipeline_init" | sed -n 's/^PIPELINE_ID=//p')"
-[[ -n "$PIPELINE_FILE" && -n "$PIPELINE_ID" ]] || die "could not create pipeline manifest"
+RESOURCE_PROFILE="$(printf '%s\n' "$pipeline_init" | sed -n 's/^RESOURCE_PROFILE=//p')"
+[[ -n "$PIPELINE_FILE" && -n "$PIPELINE_ID" && -n "$RESOURCE_PROFILE" ]] || die "could not create pipeline manifest and resource profile snapshot"
 LAST_PIPELINE_STAGE=""
 finish_pipeline() {
   local result=$?
@@ -241,10 +271,11 @@ PY
 submit_gpu_stage() {
   local label="$1"
   shift
+  local profile_args=(--resource-profile "$RESOURCE_PROFILE")
   if [[ -n "$GPU_RESOURCE" ]]; then
-    submit_stage "$label" "$@" --gpu-resource "$GPU_RESOURCE"
+    submit_stage "$label" "$@" "${profile_args[@]}" --gpu-resource "$GPU_RESOURCE"
   else
-    submit_stage "$label" "$@"
+    submit_stage "$label" "$@" "${profile_args[@]}"
   fi
 }
 
@@ -312,6 +343,66 @@ verify_active_or_completed_job() {
     return
   fi
   die "$label job $job_id is neither active nor successfully completed (sacct: ${compact:-no record})"
+}
+
+verify_preflight_profile() {
+  local job_id="$1"
+  python3 - "$PROJECT_DIR" "$job_id" "$RESOURCE_PROFILE" "$GPU_RESOURCE" "$PARTITION" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+project = Path(sys.argv[1])
+job_id, selected_path, gpu_override, partition_override = sys.argv[2:]
+receipts = []
+for path in (project / "logs" / "submissions").glob("*/receipt.json"):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    if str(value.get("job_id")) == job_id:
+        receipts.append(value)
+if not receipts:
+    raise SystemExit(f"preflight job {job_id} has no matching submission receipt; cannot verify its GPU profile")
+receipt = receipts[-1]
+command = receipt.get("command", {})
+desired = json.loads(Path(selected_path).read_text(encoding="utf-8"))
+desired_sha256 = hashlib.sha256(Path(selected_path).read_bytes()).hexdigest()
+recorded_sha256 = command.get("resource_profile_sha256")
+if recorded_sha256 and recorded_sha256 != desired_sha256:
+    raise SystemExit("selected GPU profile contents differ from those used by the supplied preflight job")
+saved_path = command.get("resource_profile")
+if saved_path:
+    if not recorded_sha256:
+        raise SystemExit("preflight receipt lacks a GPU profile content hash; resubmit preflight before resuming")
+    try:
+        saved_bytes = Path(saved_path).read_bytes()
+        saved = json.loads(saved_bytes)
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"saved preflight profile cannot be read: {saved_path}: {error}")
+    if saved != desired or (recorded_sha256 and hashlib.sha256(saved_bytes).hexdigest() != recorded_sha256):
+        raise SystemExit("selected GPU profile differs from the profile used by the supplied preflight job")
+else:
+    sbatch = command.get("sbatch", {})
+    requested = sbatch.get("gpu_request") or sbatch.get("gpus") or sbatch.get("gpu_resource")
+    old_runtime = {"device_name_contains": "H100", "min_memory_gib": 75,
+                   "min_free_memory_gib": 70, "require_bf16": True}
+    runtime = desired.get("runtime", {})
+    if requested != desired.get("scheduler", {}).get("gpu_request") or any(
+        runtime.get(key, 0) != value for key, value in old_runtime.items()
+    ):
+        raise SystemExit("legacy preflight receipt cannot prove this custom GPU profile; rerun setup/model/preflight")
+sbatch = command.get("sbatch", {})
+expected_option = "--gres" if gpu_override else desired.get("scheduler", {}).get("gpu_option")
+expected_request = gpu_override or desired.get("scheduler", {}).get("gpu_request")
+expected_partition = partition_override or desired.get("scheduler", {}).get("partition")
+actual_option = sbatch.get("gpu_option") or ("--gres" if sbatch.get("gpu_resource") else "--gpus" if sbatch.get("gpus") else None)
+actual_request = sbatch.get("gpu_request") or sbatch.get("gpu_resource") or sbatch.get("gpus")
+if actual_option and actual_option != expected_option:
+    raise SystemExit("GPU scheduler option differs from the supplied preflight job")
+if actual_request != expected_request:
+    raise SystemExit("GPU scheduler request differs from the supplied preflight job")
+if sbatch.get("partition") != expected_partition:
+    raise SystemExit("GPU partition differs from the supplied preflight job")
+PY
 }
 
 echo "Queueing the baseline pipeline under account $ACCOUNT."
@@ -456,8 +547,9 @@ if [[ "$RESUME_AFTER_PREFLIGHT" == 1 ]]; then
   elif [[ "$MODEL_JOB_DISPOSITION" != COMPLETED ]]; then
     die "preflight job $PREFLIGHT_JOB_ID completed before model job $MODEL_JOB_ID was confirmed successful"
   fi
+  verify_preflight_profile "$PREFLIGHT_JOB_ID" || die "GPU profile differs from the supplied preflight job"
   record_reused_stage preflight "$PREFLIGHT_JOB_ID" "" "" "$PREFLIGHT_JOB_STATE" verified
-  echo "Reusing model job $MODEL_JOB_ID and preflight job $PREFLIGHT_JOB_ID; resuming at training."
+  echo "Reusing model job $MODEL_JOB_ID and compatible GPU preflight job $PREFLIGHT_JOB_ID; resuming at training."
 else
   if [[ -z "$BFCL_JOB_ID" ]]; then
     if [[ -n "$SETUP_DEPENDENCY" ]]; then
@@ -520,7 +612,7 @@ Pipeline queued with afterok dependencies. Jobs run only after their required pr
   xLAM data:      $XLAM_JOB_ID  ($XLAM_DIR)
   BFCL data:      $BFCL_JOB_ID  ($BFCL_DIR)
   model download: $MODEL_JOB_ID
-  H100 preflight: $PREFLIGHT_JOB_ID
+  GPU preflight: $PREFLIGHT_JOB_ID
   training:       $TRAIN_JOB_ID  ($TRAIN_DIR)
   calibration:    $CALIBRATION_JOB_ID  ($CALIBRATION_DIR)
   xLAM evaluation:$XLAM_EVALUATION_JOB_ID  ($XLAM_EVALUATION_DIR)

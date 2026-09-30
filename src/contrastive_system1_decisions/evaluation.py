@@ -75,9 +75,12 @@ def _metrics(logits_rows: list[torch.Tensor], examples: list[DecisionExample], t
 def evaluate_jsonl(checkpoint: str | Path, data_path: str | Path, output_path: str | Path,
                    calibration_path: str | Path | None = None, batch_size: int = 32,
                    started_marker: str | Path | None = None,
-                   require_h100: bool = False) -> dict[str, Any]:
-    if require_h100:
-        preflight_gpu(require_h100=True)
+                   require_h100: bool = False,
+                   gpu_profile: str | Path | None = None,
+                   gpu_profile_sha256: str | None = None) -> dict[str, Any]:
+    if require_h100 or gpu_profile is not None:
+        preflight_gpu(require_h100=require_h100 and gpu_profile is None, gpu_profile=gpu_profile,
+                      gpu_profile_sha256=gpu_profile_sha256)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, tokenizer, config = load_model(checkpoint, device)
     examples = read_jsonl(data_path)
@@ -86,8 +89,10 @@ def evaluate_jsonl(checkpoint: str | Path, data_path: str | Path, output_path: s
             started_marker,
             Path(output_path).parent,
             "evaluate",
-            require_h100=require_h100,
+            require_h100=require_h100 and gpu_profile is None,
             details={"checkpoint": str(Path(checkpoint).resolve()), "examples": len(examples)},
+            gpu_profile=gpu_profile,
+            gpu_profile_sha256=gpu_profile_sha256,
         )
     logits, _ = collect_logits(model, tokenizer, examples, config, device, batch_size)
     temperature = 1.0
@@ -124,11 +129,14 @@ def prepare_bfcl(output_dir: str | Path, revision: str = "main") -> dict[str, An
 def evaluate_bfcl(checkpoint: str | Path, data_dir: str | Path, category: str,
                   output_path: str | Path, calibration_path: str | Path | None = None,
                   batch_size: int = 32, started_marker: str | Path | None = None,
-                  require_h100: bool = False) -> dict[str, Any]:
+                  require_h100: bool = False,
+                  gpu_profile: str | Path | None = None,
+                  gpu_profile_sha256: str | None = None) -> dict[str, Any]:
     if category not in {"multiple", "live_multiple"}:
         raise ValueError("category must be multiple or live_multiple")
-    if require_h100:
-        preflight_gpu(require_h100=True)
+    if require_h100 or gpu_profile is not None:
+        preflight_gpu(require_h100=require_h100 and gpu_profile is None, gpu_profile=gpu_profile,
+                      gpu_profile_sha256=gpu_profile_sha256)
     examples_path = Path(data_dir) / f"{category}.selector.jsonl"
     examples = read_jsonl(examples_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -138,9 +146,11 @@ def evaluate_bfcl(checkpoint: str | Path, data_dir: str | Path, category: str,
             started_marker,
             Path(output_path).parent,
             "evaluate-bfcl",
-            require_h100=require_h100,
+            require_h100=require_h100 and gpu_profile is None,
             details={"checkpoint": str(Path(checkpoint).resolve()), "examples": len(examples),
                      "category": category},
+            gpu_profile=gpu_profile,
+            gpu_profile_sha256=gpu_profile_sha256,
         )
     logits, _ = collect_logits(model, tokenizer, examples, config, device, batch_size)
     temperature = 1.0

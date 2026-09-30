@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-STAGE="" ACCOUNT="" PARTITION="" GPU_RESOURCE="" GPU_COUNT=0 CONFIG="" DATA_DIR="" INPUT_JSON=""
+STAGE="" ACCOUNT="" PARTITION="" GPU_RESOURCE="" RESOURCE_PROFILE="" GPU_COUNT=0 CONFIG="" DATA_DIR="" INPUT_JSON=""
 OUTPUT_DIR="" OUTPUT_DIR_SET=0 CHECKPOINT="" DATA_PATH="" CALIBRATION="" CATEGORY="" REVISION="main"
 ENV_SCRIPT=""
 BM25_NEGATIVES=0 RESUME=0 CPUS="" MEMORY="" WALL_TIME="" STARTUP_TIMEOUT=180 MIN_FREE_GIB=15
@@ -14,18 +14,18 @@ Usage: scripts/submit.sh --stage STAGE --account ACCOUNT [options]
 
 Stages: setup, prepare-xlam, prepare-bfcl, prepare-model, preflight, train, calibrate, evaluate, benchmark
 
-Common: --project-dir PATH --env-script PATH --partition NAME --gpu-resource SPEC
+Common: --project-dir PATH --env-script PATH --partition NAME --resource-profile PATH
+        --gpu-resource SPEC (legacy --gres override)
         --cpus-per-task N --memory SIZE --time D-HH:MM:SS
         --output-dir PATH --dependency JOB_ID --startup-timeout-seconds N --min-free-gib N --help
-        By default, Slurm uses the cluster's default partition. GPU stages request --gpus=h100:1;
-        --partition and --gpu-resource are optional cluster-specific overrides; --gpu-resource takes
-        a full GRES value, such as gpu:<site-type>:1.
+        GPU stages use the profile's exact scheduler request and runtime checks. The default is
+        configs/resources/nibi-h100-80gb.json; select another profile for a different Alliance GPU.
 
 Stage options:
   prepare-xlam:  [--input-json PATH] [--bm25-negatives N]
   prepare-bfcl:  [--revision REF]
   prepare-model: --config PATH (downloads pinned weights in a CPU allocation)
-  preflight:     checks allocated H100 model, free memory, CUDA, and BF16
+  preflight:     checks the allocated GPU against the selected resource profile
   train:         --config PATH --data-dir PATH [--resume]
   calibrate:     --checkpoint PATH --data PATH
   evaluate:      --checkpoint PATH --data PATH [--calibration PATH]
@@ -40,13 +40,13 @@ die() { echo "submit: $*" >&2; exit 2; }
 
 while (($#)); do
   case "$1" in
-    --stage|--project-dir|--env-script|--account|--partition|--gpu-resource|--config|--data-dir|--input-json|--output-dir|--checkpoint|--data|--calibration|--category|--revision|--bm25-negatives|--cpus-per-task|--memory|--time|--startup-timeout-seconds|--min-free-gib|--dependency)
+    --stage|--project-dir|--env-script|--account|--partition|--gpu-resource|--resource-profile|--config|--data-dir|--input-json|--output-dir|--checkpoint|--data|--calibration|--category|--revision|--bm25-negatives|--cpus-per-task|--memory|--time|--startup-timeout-seconds|--min-free-gib|--dependency)
       (($# >= 2)) || die "$1 needs a value"
       key="$1"; value="$2"; shift 2
       case "$key" in
         --stage) STAGE="$value" ;; --project-dir) PROJECT_DIR="$value" ;; --env-script) ENV_SCRIPT="$value" ;;
         --account) ACCOUNT="$value" ;; --partition) PARTITION="$value" ;;
-        --gpu-resource) GPU_RESOURCE="$value" ;; --config) CONFIG="$value" ;;
+        --gpu-resource) GPU_RESOURCE="$value" ;; --resource-profile) RESOURCE_PROFILE="$value" ;; --config) CONFIG="$value" ;;
         --data-dir) DATA_DIR="$value" ;; --input-json) INPUT_JSON="$value" ;;
         --output-dir) OUTPUT_DIR="$value"; OUTPUT_DIR_SET=1 ;; --checkpoint) CHECKPOINT="$value" ;;
         --data) DATA_PATH="$value" ;; --calibration) CALIBRATION="$value" ;;
@@ -146,6 +146,73 @@ case "$STAGE" in
   *) die "unknown stage: $STAGE" ;;
 esac
 
+PROFILE_NAME="" PROFILE_GPU_OPTION="" PROFILE_GPU_REQUEST="" PROFILE_GPU_PARTITION="" GPU_PROFILE_SHA256=""
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+TOKEN="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+SUBMISSION_DIR="$PROJECT_DIR/logs/submissions/$STAGE-$STAMP-$TOKEN"
+mkdir -p "$SUBMISSION_DIR"
+if (( GPU_COUNT > 0 )); then
+  RESOURCE_PROFILE="${RESOURCE_PROFILE:-$PROJECT_DIR/configs/resources/nibi-h100-80gb.json}"
+  [[ "$RESOURCE_PROFILE" == /* ]] || RESOURCE_PROFILE="$PROJECT_DIR/$RESOURCE_PROFILE"
+  [[ -r "$RESOURCE_PROFILE" ]] || die "GPU resource profile is not readable: $RESOURCE_PROFILE"
+  RESOURCE_PROFILE_SNAPSHOT="$SUBMISSION_DIR/resource-profile.json"
+  if ! profile_output="$(python3 - "$RESOURCE_PROFILE" "$RESOURCE_PROFILE_SNAPSHOT" <<'PY'
+import hashlib, json, math, os, re, sys
+from pathlib import Path
+source, destination = map(Path, sys.argv[1:])
+contents = source.read_bytes()
+profile = json.loads(contents)
+if not isinstance(profile, dict) or profile.get("schema_version") != 1:
+    raise SystemExit("resource profile schema_version must be 1")
+name = profile.get("name")
+scheduler = profile.get("scheduler")
+runtime = profile.get("runtime")
+if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}", name):
+    raise SystemExit("resource profile name must be a short, single-line label")
+if not isinstance(scheduler, dict) or not isinstance(runtime, dict):
+    raise SystemExit("resource profile needs scheduler and runtime objects")
+option = scheduler.get("gpu_option")
+request = scheduler.get("gpu_request")
+partition = scheduler.get("partition") or ""
+if option not in {"--gpus", "--gres"}: raise SystemExit("gpu_option must be --gpus or --gres")
+if not isinstance(request, str) or not re.fullmatch(r"[A-Za-z0-9_.:=+-]+", request):
+    raise SystemExit("gpu_request has invalid Slurm resource syntax")
+if partition and not re.fullmatch(r"[A-Za-z0-9_.-]+", partition):
+    raise SystemExit("profile partition has invalid syntax")
+for key in ("min_memory_gib", "min_free_memory_gib"):
+    value = runtime.get(key, 0)
+    if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise SystemExit(f"runtime.{key} must be a finite nonnegative number")
+if not isinstance(runtime.get("require_cuda", True), bool): raise SystemExit("runtime.require_cuda must be boolean")
+if runtime.get("require_cuda", True) is not True: raise SystemExit("GPU stages require runtime.require_cuda=true")
+if not isinstance(runtime.get("require_bf16", False), bool): raise SystemExit("runtime.require_bf16 must be boolean")
+if not isinstance(runtime.get("device_name_contains", ""), str):
+    raise SystemExit("runtime.device_name_contains must be a string")
+temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+temporary.write_bytes(contents)
+os.replace(temporary, destination)
+print(name)
+print(option)
+print(request)
+print(partition)
+print(hashlib.sha256(contents).hexdigest())
+PY
+)"; then
+    die "invalid GPU resource profile $RESOURCE_PROFILE: $profile_output"
+  fi
+  mapfile -t profile_fields <<< "$profile_output"
+  (( ${#profile_fields[@]} >= 3 )) || die "could not parse GPU resource profile: $RESOURCE_PROFILE"
+  PROFILE_NAME="${profile_fields[0]}"
+  PROFILE_GPU_OPTION="${profile_fields[1]}"
+  PROFILE_GPU_REQUEST="${profile_fields[2]}"
+  PROFILE_GPU_PARTITION="${profile_fields[3]:-}"
+  GPU_PROFILE_SHA256="${profile_fields[4]:-}"
+  [[ "$GPU_PROFILE_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "could not calculate the GPU resource profile hash"
+  RESOURCE_PROFILE="$RESOURCE_PROFILE_SNAPSHOT"
+elif [[ -n "$RESOURCE_PROFILE" ]]; then
+  die "--resource-profile applies only to GPU stages"
+fi
+
 # The gated xLAM dataset is the only current stage that needs a Hugging Face
 # credential. Do not place it in unrelated Slurm job environments.
 if [[ "$STAGE" != "prepare-xlam" ]]; then unset HF_TOKEN; fi
@@ -172,7 +239,7 @@ required = {"model_name", "model_revision", "architecture", "projection_dim", "t
 missing = required - config.keys()
 if missing: raise SystemExit(f"config missing fields: {', '.join(sorted(missing))}")
 if config["architecture"] not in {"shared_tied", "shared_heads", "separate"}: raise SystemExit("unsupported architecture")
-if config.get("require_h100", True) is not True: raise SystemExit("training config must set require_h100 to true")
+if not isinstance(config.get("require_h100", True), bool): raise SystemExit("require_h100 must be boolean")
 import re
 if not re.fullmatch(r"[0-9a-f]{40}", str(config["model_revision"])): raise SystemExit("model_revision must be a full 40-character commit SHA")
 if config["epochs"] < 1 or config["batch_size"] < 1 or config["tau"] <= 0: raise SystemExit("invalid training values")
@@ -251,10 +318,6 @@ PY
   CONFIG="$RUN_DIR/config.json"
 fi
 
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-TOKEN="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-SUBMISSION_DIR="$PROJECT_DIR/logs/submissions/$STAGE-$STAMP-$TOKEN"
-mkdir -p "$SUBMISSION_DIR"
 RECEIPT="$SUBMISSION_DIR/receipt.json"
 LOG_OUT="$SUBMISSION_DIR/${STAGE}-${STAMP}-%j.out"
 LOG_ERR="$SUBMISSION_DIR/${STAGE}-${STAMP}-%j.err"
@@ -271,19 +334,27 @@ case "$STAGE" in
 esac
 [[ -f "$SBATCH_SCRIPT" ]] || die "missing Slurm entry point: $SBATCH_SCRIPT"
 
-COMMAND_JSON="$(python3 - "$STAGE" "$PROJECT_DIR" "$ACCOUNT" "$PARTITION" "$GPU_RESOURCE" "$GPU_COUNT" "$CPUS" "$MEMORY" "$WALL_TIME" "$DEPENDENCY" "$CONFIG" "$DATA_DIR" "$INPUT_JSON" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CATEGORY" "$CALIBRATION" "$BM25_NEGATIVES" "$REVISION" "$RESUME" "$ENV_SCRIPT" "$MODEL_MANIFEST" <<'PY'
+COMMAND_JSON="$(python3 - "$STAGE" "$PROJECT_DIR" "$ACCOUNT" "$PARTITION" "$GPU_RESOURCE" "$GPU_COUNT" "$CPUS" "$MEMORY" "$WALL_TIME" "$DEPENDENCY" "$CONFIG" "$DATA_DIR" "$INPUT_JSON" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CATEGORY" "$CALIBRATION" "$BM25_NEGATIVES" "$REVISION" "$RESUME" "$ENV_SCRIPT" "$MODEL_MANIFEST" "$RESOURCE_PROFILE" "$PROFILE_NAME" "$PROFILE_GPU_OPTION" "$PROFILE_GPU_REQUEST" "$PROFILE_GPU_PARTITION" "$GPU_PROFILE_SHA256" <<'PY'
 import json, sys
 (stage, project, account, partition, gpu, gpu_count, cpus, memory, wall, dependency, config,
  data_dir, input_json, output_dir, checkpoint, data, category, calibration,
- bm25, revision, resume, environment_script, model_manifest) = sys.argv[1:]
+ bm25, revision, resume, environment_script, model_manifest, resource_profile, profile_name,
+ profile_gpu_option, profile_gpu_request, profile_partition, profile_sha256) = sys.argv[1:]
 gpu_count = int(gpu_count)
+effective_gpu_option = "--gres" if gpu else profile_gpu_option
+effective_gpu_request = gpu or profile_gpu_request
 print(json.dumps({
     "stage": stage,
     "project_dir": project,
     "environment_script": environment_script or None,
     "model_cache_manifest": model_manifest,
-    "sbatch": {"account": account, "partition": partition or None, "gpu_resource": gpu or None,
-               "gpus": f"h100:{gpu_count}" if gpu_count and not gpu else None,
+    "resource_profile": resource_profile or None,
+    "resource_profile_name": profile_name or None,
+    "resource_profile_sha256": profile_sha256 or None,
+    "sbatch": {"account": account, "partition": partition or profile_partition or None,
+               "gpu_option": effective_gpu_option or None,
+               "gpu_request": effective_gpu_request or None,
+               "gpu_resource": gpu or None,
                "cpus_per_task": cpus, "memory": memory, "time": wall,
                "afterok_job_id": dependency or None},
     "arguments": {"config": config or None, "data_dir": data_dir or None,
@@ -302,11 +373,13 @@ python3 "$PROJECT_DIR/scripts/receipt.py" init --path "$RECEIPT" --token "$TOKEN
 sbatch_args=(--parsable --comment "csd:$TOKEN" --account "$ACCOUNT"
   --cpus-per-task "$CPUS" --mem "$MEMORY" --time "$WALL_TIME" --chdir "$PROJECT_DIR"
   --output "$LOG_OUT" --error "$LOG_ERR" --export=ALL)
-[[ -z "$PARTITION" ]] || sbatch_args+=(--partition "$PARTITION")
+EFFECTIVE_PARTITION="$PARTITION"
+if [[ -z "$EFFECTIVE_PARTITION" && "$GPU_COUNT" -gt 0 ]]; then EFFECTIVE_PARTITION="$PROFILE_GPU_PARTITION"; fi
+[[ -z "$EFFECTIVE_PARTITION" ]] || sbatch_args+=(--partition "$EFFECTIVE_PARTITION")
 if [[ -n "$GPU_RESOURCE" ]]; then
   sbatch_args+=(--gres="$GPU_RESOURCE")
 elif (( GPU_COUNT > 0 )); then
-  sbatch_args+=(--gpus="h100:$GPU_COUNT")
+  sbatch_args+=("$PROFILE_GPU_OPTION=$PROFILE_GPU_REQUEST")
 fi
 [[ -z "$DEPENDENCY" ]] || sbatch_args+=(--dependency="afterok:${DEPENDENCY//,/:}")
 [[ "$STAGE" != train ]] || sbatch_args+=(--signal=B:USR1@300)
@@ -315,11 +388,11 @@ case "$STAGE" in
   prepare-xlam) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$RUN_DIR" "$BM25_NEGATIVES" "$INPUT_JSON") ;;
   prepare-bfcl) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$RUN_DIR" "$REVISION") ;;
   prepare-model) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CONFIG" "$MODEL_MANIFEST") ;;
-  preflight) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR") ;;
-  train) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CONFIG" "$DATA_DIR" "$RESUME") ;;
-  calibrate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH") ;;
-  evaluate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CALIBRATION") ;;
-  benchmark) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_DIR" "$CATEGORY" "$CALIBRATION") ;;
+  preflight) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
+  train) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CONFIG" "$DATA_DIR" "$RESUME" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
+  calibrate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
+  evaluate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CALIBRATION" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
+  benchmark) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_DIR" "$CATEGORY" "$CALIBRATION" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
 esac
 
 echo "Submitting $STAGE; resolved output: $RUN_DIR"

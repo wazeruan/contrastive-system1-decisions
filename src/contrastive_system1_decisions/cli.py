@@ -23,8 +23,15 @@ def _write_atomic_json(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _preflight(require_h100: bool, min_memory_gib: float) -> dict[str, Any]:
-    return preflight_gpu(require_h100=require_h100, min_memory_gib=min_memory_gib)
+def _preflight(require_h100: bool, min_memory_gib: float,
+               gpu_profile: str | Path | None = None,
+               gpu_profile_sha256: str | None = None) -> dict[str, Any]:
+    return preflight_gpu(
+        require_h100=require_h100 and gpu_profile is None,
+        min_memory_gib=min_memory_gib,
+        gpu_profile=gpu_profile,
+        gpu_profile_sha256=gpu_profile_sha256,
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -56,6 +63,8 @@ def _parser() -> argparse.ArgumentParser:
     train_command.add_argument("--run-dir", type=Path, required=True)
     train_command.add_argument("--resume", action="store_true")
     train_command.add_argument("--started-marker", type=Path)
+    train_command.add_argument("--gpu-profile", type=Path)
+    train_command.add_argument("--gpu-profile-sha256")
 
     calibrate = commands.add_parser("calibrate", help="fit one temperature on the calibration split")
     calibrate.add_argument("--checkpoint", type=Path, required=True)
@@ -64,6 +73,8 @@ def _parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--batch-size", type=int, default=32)
     calibrate.add_argument("--require-h100", action="store_true")
     calibrate.add_argument("--started-marker", type=Path)
+    calibrate.add_argument("--gpu-profile", type=Path)
+    calibrate.add_argument("--gpu-profile-sha256")
 
     evaluate = commands.add_parser("evaluate", help="score a prepared JSONL selector split")
     evaluate.add_argument("--checkpoint", type=Path, required=True)
@@ -73,6 +84,8 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--batch-size", type=int, default=32)
     evaluate.add_argument("--require-h100", action="store_true")
     evaluate.add_argument("--started-marker", type=Path)
+    evaluate.add_argument("--gpu-profile", type=Path)
+    evaluate.add_argument("--gpu-profile-sha256")
 
     benchmark = commands.add_parser("evaluate-bfcl", help="score the custom BFCL tool-selection slice")
     benchmark.add_argument("--checkpoint", type=Path, required=True)
@@ -83,10 +96,14 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--batch-size", type=int, default=32)
     benchmark.add_argument("--require-h100", action="store_true")
     benchmark.add_argument("--started-marker", type=Path)
+    benchmark.add_argument("--gpu-profile", type=Path)
+    benchmark.add_argument("--gpu-profile-sha256")
 
     preflight = commands.add_parser("preflight", help="check the allocated accelerator")
     preflight.add_argument("--require-h100", action="store_true")
     preflight.add_argument("--min-memory-gib", type=float, default=75.0)
+    preflight.add_argument("--gpu-profile", type=Path)
+    preflight.add_argument("--gpu-profile-sha256")
     preflight.add_argument("--write-marker", type=Path)
     preflight.add_argument("--run-dir", type=Path)
 
@@ -113,24 +130,30 @@ def main() -> None:
     elif args.command == "prepare-model":
         result = prepare_model(args.config, args.manifest, args.started_marker, args.run_dir)
     elif args.command == "train":
-        result = train(args.config, args.data_dir, args.run_dir, args.resume, args.started_marker)
+        result = train(args.config, args.data_dir, args.run_dir, args.resume, args.started_marker,
+                       args.gpu_profile, args.gpu_profile_sha256)
     elif args.command == "calibrate":
         result = fit_temperature(args.checkpoint, args.data, args.output, args.batch_size,
-                                 args.started_marker, args.require_h100)
+                                 args.started_marker, args.require_h100, args.gpu_profile,
+                                 args.gpu_profile_sha256)
     elif args.command == "evaluate":
         result = evaluate_jsonl(args.checkpoint, args.data, args.output, args.calibration, args.batch_size,
-                                args.started_marker, args.require_h100)
+                                args.started_marker, args.require_h100, args.gpu_profile,
+                                args.gpu_profile_sha256)
     elif args.command == "evaluate-bfcl":
         result = evaluate_bfcl(
             args.checkpoint, args.data_dir, args.category, args.output, args.calibration, args.batch_size,
-            args.started_marker, args.require_h100
+            args.started_marker, args.require_h100, args.gpu_profile, args.gpu_profile_sha256
         )
     elif args.command == "preflight":
-        result = _preflight(args.require_h100, args.min_memory_gib)
+        result = _preflight(args.require_h100, args.min_memory_gib, args.gpu_profile,
+                            args.gpu_profile_sha256)
         if args.write_marker:
             result = write_started_marker(
                 args.write_marker, args.run_dir or args.write_marker.parent, "preflight",
-                require_h100=args.require_h100, min_memory_gib=args.min_memory_gib,
+                require_h100=args.require_h100 and args.gpu_profile is None,
+                min_memory_gib=args.min_memory_gib, gpu_profile=args.gpu_profile,
+                gpu_profile_sha256=args.gpu_profile_sha256,
             )
     else:
         raise AssertionError(f"unhandled command: {args.command}")

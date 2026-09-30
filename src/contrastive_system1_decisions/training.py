@@ -235,7 +235,9 @@ def _save_checkpoint(
 
 
 def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, resume: bool = False,
-          started_marker: str | Path | None = None) -> dict[str, Any]:
+          started_marker: str | Path | None = None,
+          gpu_profile: str | Path | None = None,
+          gpu_profile_sha256: str | None = None) -> dict[str, Any]:
     global _STOP_REQUESTED
     _STOP_REQUESTED = False
     signal.signal(signal.SIGTERM, _request_stop)
@@ -251,7 +253,11 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
     validation_loader = _make_loader(data_root / "validation.jsonl", int(config["eval_batch_size"]), False, seed)
     _record_run_manifest(Path(config_path), data_root, destination)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if bool(config.get("require_h100", True)):
+    require_h100 = bool(config.get("require_h100", True)) and gpu_profile is None
+    if gpu_profile is not None:
+        preflight_gpu(gpu_profile=gpu_profile, gpu_profile_sha256=gpu_profile_sha256)
+        device = torch.device("cuda")
+    elif require_h100:
         _preflight_h100()
         device = torch.device("cuda")
 
@@ -290,7 +296,8 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
 
     if started_marker is not None:
         _write_started_marker(Path(started_marker), destination, model,
-                              require_h100=bool(config.get("require_h100", True)))
+                              require_h100=require_h100, gpu_profile=gpu_profile,
+                              gpu_profile_sha256=gpu_profile_sha256)
 
     history_path = destination / "history.jsonl"
     max_epochs = int(config["epochs"])
@@ -351,12 +358,16 @@ def _preflight_h100(min_memory_gib: float = 75.0) -> dict[str, Any]:
 
 
 def _write_started_marker(path: Path, run_dir: Path, model: DualEncoderScorer,
-                          require_h100: bool = True) -> None:
+                          require_h100: bool = True,
+                          gpu_profile: str | Path | None = None,
+                          gpu_profile_sha256: str | None = None) -> None:
     marker = write_started_marker(
         path,
         run_dir,
         "train",
-        require_h100=require_h100,
+        require_h100=require_h100 and gpu_profile is None,
+        gpu_profile=gpu_profile,
+        gpu_profile_sha256=gpu_profile_sha256,
         details={"architecture": model.architecture, "model_name": model.model_name},
     )
     _write_status(path.parent, "STARTED", marker)

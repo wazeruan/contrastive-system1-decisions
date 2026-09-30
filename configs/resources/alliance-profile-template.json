@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "Replace with the Alliance cluster and GPU profile",
+  "scheduler": {
+    "gpu_option": "--gres",
+    "gpu_request": "gpu:REPLACE_WITH_SITE_GPU_TYPE:1",
+    "partition": null
+  },
+  "runtime": {
+    "require_cuda": true,
+    "device_name_contains": "",
+    "min_memory_gib": 0,
+    "min_free_memory_gib": 0,
+    "require_bf16": false
+  }
+}

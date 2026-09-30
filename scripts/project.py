@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -74,13 +75,29 @@ def command_init(args: argparse.Namespace) -> None:
     pipeline_id = f"{stamp}-{uuid.uuid4().hex[:8]}"
     directory = base / pipeline_id
     directory.mkdir()
+    resource_profile_path: str | None = None
+    resource_profile_name: str | None = None
+    resource_profile_sha256: str | None = None
+    if args.resource_profile:
+        source = Path(args.resource_profile).expanduser().resolve()
+        profile_bytes = source.read_bytes()
+        profile = json.loads(profile_bytes)
+        snapshot = directory / "resource-profile.json"
+        temporary = snapshot.with_name(f".{snapshot.name}.{os.getpid()}.tmp")
+        temporary.write_bytes(profile_bytes)
+        os.replace(temporary, snapshot)
+        resource_profile_path = str(snapshot.resolve())
+        resource_profile_name = profile.get("name") if isinstance(profile, dict) else None
+        resource_profile_sha256 = hashlib.sha256(profile_bytes).hexdigest()
     manifest = {
         "schema_version": 1,
         "pipeline_id": pipeline_id,
         "project_dir": str(project),
         "account": args.account,
         "config": str(Path(args.config).resolve()),
-        "resource_profile": str(Path(args.resource_profile).resolve()) if args.resource_profile else None,
+        "resource_profile": resource_profile_path,
+        "resource_profile_name": resource_profile_name,
+        "resource_profile_sha256": resource_profile_sha256,
         "created_at_utc": now(),
         "updated_at_utc": now(),
         "submission_state": "SUBMITTING",
@@ -90,6 +107,8 @@ def command_init(args: argparse.Namespace) -> None:
     print(f"PIPELINE_ID={pipeline_id}")
     print(f"PIPELINE_FILE={directory / 'pipeline.json'}")
     print(f"PIPELINE_DIR={directory}")
+    if resource_profile_path:
+        print(f"RESOURCE_PROFILE={resource_profile_path}")
 
 
 def receipt_data(raw: str | None) -> dict[str, Any]:
@@ -256,6 +275,8 @@ def print_status(manifest: dict[str, Any], stages: list[dict[str, Any]]) -> None
     current = pipeline_state(manifest, stages)
     print(f"Pipeline: {manifest['pipeline_id']}  [{current}]")
     print(f"Created:  {manifest.get('created_at_utc', 'unknown')}  Account: {manifest.get('account', 'unknown')}")
+    if manifest.get("resource_profile_name"):
+        print(f"GPU:      {manifest['resource_profile_name']} ({manifest.get('resource_profile')})")
     print(f"Run:      {Path(manifest['_path']).parent}")
     print("")
     print(f"{'STAGE':<18} {'STATE':<28} {'JOB':<12} OUTPUT / DETAILS")
@@ -305,6 +326,7 @@ def command_results(args: argparse.Namespace) -> None:
     lines = [f"# Pipeline results: {manifest['pipeline_id']}", "",
              f"- **Created:** {manifest.get('created_at_utc', 'unknown')}",
              f"- **Account:** {manifest.get('account', 'unknown')}",
+             f"- **GPU profile:** {manifest.get('resource_profile_name') or manifest.get('resource_profile') or 'unknown'}",
              f"- **Current state:** {manifest['current_state']}", "",
              "## Stage status", "", "| Stage | State | Job ID | Output |", "|---|---|---:|---|"]
     for stage in stages:
