@@ -35,8 +35,9 @@ To resume after model preparation and GPU preflight, add --resume-after-prefligh
 --model-job-id, and --preflight-job-id. This mode also requires the completed
 BFCL data so no earlier pipeline stage needs to be submitted again. Use it only
 when no earlier training submission is still pending, running, or unverified.
-It starts a fresh training run; confirm a failed or invalid prior run is terminal
-before retrying.
+Before submission, the script verifies the model receipt/config, GPU profile,
+and that any earlier train job linked to this preflight is terminally failed.
+It then starts a fresh training run.
 
 Options:
   --account ACCOUNT       Required Slurm account
@@ -570,6 +571,9 @@ if [[ "$RESUME_AFTER_PREFLIGHT" == 1 ]]; then
   fi
   verify_preflight_profile "$PREFLIGHT_JOB_ID" || die "GPU profile differs from the supplied preflight job"
   record_reused_stage preflight "$PREFLIGHT_JOB_ID" "" "" "$PREFLIGHT_JOB_STATE" verified
+  python3 "$PIPELINE_TOOL" check-resume --project-dir "$PROJECT_DIR" --config "$CONFIG" \
+    --model-job-id "$MODEL_JOB_ID" --preflight-job-id "$PREFLIGHT_JOB_ID" || \
+    die "resume safety checks failed; resolve the reported model/train state before submitting"
   echo "Reusing model job $MODEL_JOB_ID and compatible GPU preflight job $PREFLIGHT_JOB_ID; resuming at training."
 else
   if [[ -z "$BFCL_JOB_ID" ]]; then

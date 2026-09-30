@@ -247,7 +247,8 @@ def current_stage(stage: dict[str, Any], refresh: bool) -> dict[str, Any]:
     receipt = receipt_data(stage.get("receipt"))
     if receipt:
         result["state"] = receipt.get("state", result.get("state", "UNKNOWN/UNVERIFIED"))
-        result["reason"] = receipt.get("reason") or result.get("reason")
+        if "reason" in receipt:
+            result["reason"] = receipt.get("reason")
         result["run_dir"] = receipt.get("run_dir") or result.get("run_dir")
         result["stdout"] = receipt.get("log_out") or result.get("stdout")
         result["stderr"] = receipt.get("log_err") or result.get("stderr")
@@ -256,7 +257,7 @@ def current_stage(stage: dict[str, Any], refresh: bool) -> dict[str, Any]:
         state, reason = scheduler_state(job_id, True)
         if state:
             result["state"] = state
-            result["reason"] = reason or result.get("reason")
+            result["reason"] = reason
         elif reason:
             result["previous_state"] = result.get("state")
             result["state"] = "UNKNOWN/UNVERIFIED"
@@ -357,24 +358,25 @@ def command_results(args: argparse.Namespace) -> None:
         lines.append(f"| {stage.get('name', '')} | {stage.get('state', '')} | "
                      f"{stage.get('job_id') or ''} | `{output}` |")
     lines.extend(["", "## Metrics and artifacts", ""])
-    artifacts: list[tuple[str, Path]] = []
+    artifacts: list[tuple[str, Path, str]] = []
     for stage in stages:
         run_dir = Path(str(stage.get("run_dir") or "")) if stage.get("run_dir") else None
         if run_dir is None:
             continue
+        stage_state = str(stage.get("state", "UNKNOWN/UNVERIFIED")).upper()
         if stage.get("name") == "train":
             for rel in ("status.json", "checkpoints/best.json", "checkpoints/best.pt", "history.jsonl"):
                 candidate = run_dir / rel
                 if candidate.is_file():
-                    artifacts.append((f"Training {rel}", candidate))
+                    artifacts.append((f"Training {rel}", candidate, stage_state))
         elif stage.get("name") in {"calibrate", "evaluate", "evaluate-xlam", "benchmark", "evaluate-bfcl"}:
             for rel in ("calibration.json", "metrics.json"):
                 candidate = run_dir / rel
                 if candidate.is_file():
-                    artifacts.append((f"{stage.get('name')} {rel}", candidate))
+                    artifacts.append((f"{stage.get('name')} {rel}", candidate, stage_state))
     if not artifacts:
         lines.append("No result artifacts are present yet; this is normal while jobs are queued or running.")
-    for label, artifact in artifacts:
+    for label, artifact, stage_state in artifacts:
         detail = metric_line(artifact) if artifact.suffix == ".json" else ""
         if artifact.name == "history.jsonl":
             records = []
@@ -388,7 +390,8 @@ def command_results(args: argparse.Namespace) -> None:
                 validation = last.get("validation", {})
                 detail = (f"epochs={len(records)}, last_validation_accuracy={validation.get('accuracy')}, "
                           f"last_validation_nll={validation.get('nll')}, global_step={last.get('global_step')}")
-        lines.append(f"- **{label}:** `{artifact}`" + (f" — {detail}" if detail else ""))
+        provisional = "" if stage_state == "SUCCEEDED" else f" [PROVISIONAL: stage {stage_state}]"
+        lines.append(f"- **{label}{provisional}:** `{artifact}`" + (f" — {detail}" if detail else ""))
     lines.extend(["", f"Manifest: `{path}`", ""])
     output = path.parent / "RESULTS.md"
     temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
@@ -410,6 +413,108 @@ def command_list(args: argparse.Namespace) -> None:
         print(f"{value.get('pipeline_id', path.parent.name):<30} "
               f"{value.get('submission_state', 'UNKNOWN'):<20} "
               f"{value.get('created_at_utc', ''):<22} {value.get('account', '')}")
+
+
+def command_check_resume(args: argparse.Namespace) -> None:
+    project = Path(args.project_dir).expanduser().resolve()
+    config_path = Path(args.config).expanduser().resolve()
+    config = load_json(config_path)
+    if not isinstance(config, dict):
+        raise ValueError(f"selected config cannot be read: {config_path}")
+
+    model_receipts = []
+    for path in (project / "logs" / "submissions").glob("*/receipt.json"):
+        value = receipt_data(str(path))
+        if str(value.get("job_id")) == args.model_job_id:
+            model_receipts.append((path, value))
+    if len(model_receipts) != 1:
+        raise ValueError(
+            f"model job {args.model_job_id} has {len(model_receipts)} matching receipts; "
+            "cannot prove its model revision"
+        )
+    _receipt_path, receipt = model_receipts[0]
+    if receipt.get("stage") != "prepare-model":
+        raise ValueError(f"job {args.model_job_id} is not a prepare-model submission")
+    run_dir = Path(str(receipt.get("run_dir") or ""))
+    snapshot = run_dir / "config.json" if receipt.get("run_dir") else None
+    if snapshot is not None and snapshot.is_file():
+        model_config = load_json(snapshot)
+        model_source = snapshot
+    else:
+        raw_config = receipt.get("command", {}).get("arguments", {}).get("config")
+        if not isinstance(raw_config, str) or not raw_config:
+            raise ValueError(f"model job {args.model_job_id} receipt has no config path")
+        model_source = Path(raw_config).expanduser()
+        if not model_source.is_absolute():
+            model_source = project / model_source
+        model_config = load_json(model_source)
+    if not isinstance(model_config, dict):
+        raise ValueError(f"model job config cannot be read: {model_source}")
+    for key in ("model_name", "model_revision"):
+        if model_config.get(key) != config.get(key):
+            raise ValueError(
+                f"selected config {key} does not match model job {args.model_job_id}; "
+                "prepare the matching model revision before resuming"
+            )
+
+    related_train_jobs: set[str] = set()
+    for path in (project / "runs" / "pipelines").glob("*/pipeline.json"):
+        value = load_json(path)
+        if not isinstance(value, dict):
+            continue
+        stages = value.get("stages", [])
+        has_preflight = any(
+            stage.get("name") == "preflight" and str(stage.get("job_id") or "") == args.preflight_job_id
+            for stage in stages if isinstance(stage, dict)
+        )
+        if not has_preflight:
+            continue
+        for stage in stages:
+            if not isinstance(stage, dict) or stage.get("name") != "train":
+                continue
+            job_id = str(stage.get("job_id") or "")
+            if job_id:
+                related_train_jobs.add(job_id)
+            elif str(stage.get("state", "")).upper() != "SUBMISSION_REJECTED":
+                raise ValueError(f"pipeline {path.parent.name} has a train stage with no verifiable job ID")
+
+    for path in (project / "logs" / "submissions").glob("train-*/receipt.json"):
+        value = receipt_data(str(path))
+        command = value.get("command", {})
+        dependencies = command.get("dependency_resolution", {}).get("requested_afterok_job_id")
+        if not dependencies:
+            dependencies = command.get("sbatch", {}).get("afterok_job_id")
+        dependency_ids = {part for part in str(dependencies or "").split(",") if part}
+        if args.preflight_job_id not in dependency_ids:
+            continue
+        job_id = str(value.get("job_id") or "")
+        if job_id:
+            related_train_jobs.add(job_id)
+        elif str(value.get("state", "")).upper() != "SUBMISSION_REJECTED":
+            raise ValueError(f"train receipt {path} references this preflight but has no job ID")
+
+    for job_id in sorted(related_train_jobs, key=int):
+        state, reason = scheduler_state(job_id, True)
+        if state in ACTIVE:
+            raise ValueError(
+                f"earlier train job {job_id} linked to preflight {args.preflight_job_id} is {state}"
+                + (f" ({reason})" if reason else "")
+                + "; wait for it to finish before starting another train"
+            )
+        if state == "SUCCEEDED":
+            raise ValueError(
+                f"train job {job_id} linked to preflight {args.preflight_job_id} already succeeded; "
+                "reuse its checkpoint/results instead of submitting a duplicate train"
+            )
+        if state not in FAILED:
+            raise ValueError(
+                f"earlier train job {job_id} linked to preflight {args.preflight_job_id} is "
+                f"{state or 'UNKNOWN/UNVERIFIED'}; do not resubmit until its state is verified"
+            )
+        print(f"Verified earlier train job {job_id} is terminal ({state}); a retry may proceed.")
+
+    print(f"Verified model job {args.model_job_id} matches selected model name/revision.")
+    print(f"No pending, running, successful, or unverifiable train job is linked to preflight {args.preflight_job_id}.")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -443,6 +548,13 @@ def parser() -> argparse.ArgumentParser:
     finish.add_argument("--exit-code", required=True, type=int)
     finish.add_argument("--last-stage")
     finish.set_defaults(function=command_finish)
+
+    check_resume = commands.add_parser("check-resume")
+    check_resume.add_argument("--project-dir", required=True)
+    check_resume.add_argument("--config", required=True)
+    check_resume.add_argument("--model-job-id", required=True)
+    check_resume.add_argument("--preflight-job-id", required=True)
+    check_resume.set_defaults(function=command_check_resume)
 
     for name, function in (("status", command_status), ("results", command_results), ("list", command_list)):
         item = commands.add_parser(name)
