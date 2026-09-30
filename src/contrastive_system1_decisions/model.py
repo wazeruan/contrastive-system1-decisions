@@ -73,9 +73,13 @@ class DualEncoderScorer(nn.Module):
         self.tau = tau
 
         verify_prepared_model(model_name, revision)
-        self.query_encoder = AutoModel.from_pretrained(model_name, revision=revision)
+        self.query_encoder = AutoModel.from_pretrained(
+            model_name, revision=revision, torch_dtype=torch.float32
+        )
         if architecture == "separate":
-            self.action_encoder = AutoModel.from_pretrained(model_name, revision=revision)
+            self.action_encoder = AutoModel.from_pretrained(
+                model_name, revision=revision, torch_dtype=torch.float32
+            )
         else:
             self.action_encoder = self.query_encoder
 
@@ -88,8 +92,9 @@ class DualEncoderScorer(nn.Module):
 
     @staticmethod
     def _mean_pool(hidden: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        weights = mask.unsqueeze(-1).to(hidden.dtype)
-        return (hidden * weights).sum(dim=1) / weights.sum(dim=1).clamp(min=1)
+        # Accumulate pooling in FP32 even when autocast produces reduced precision.
+        weights = mask.unsqueeze(-1).float()
+        return (hidden.float() * weights).sum(dim=1) / weights.sum(dim=1).clamp(min=1)
 
     def encode(
         self,
@@ -113,7 +118,7 @@ class DualEncoderScorer(nn.Module):
         tokens = {name: value.to(device) for name, value in tokens.items()}
         output = encoder(**tokens)
         pooled = self._mean_pool(output.last_hidden_state, tokens["attention_mask"])
-        return F.normalize(projection(pooled).float(), p=2, dim=-1)
+        return F.normalize(projection(pooled.to(dtype=projection.weight.dtype)).float(), p=2, dim=-1)
 
     def score_groups(
         self,

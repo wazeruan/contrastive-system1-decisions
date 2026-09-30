@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from transformers import AutoModel, AutoTokenizer
 
 from .runtime import write_started_marker
@@ -42,12 +44,13 @@ def prepare_model(config_path: str | Path, manifest_path: str | Path,
         )
     # Load on CPU so downloads and initialization stay outside the timed GPU job.
     tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision, use_fast=True)
-    model = AutoModel.from_pretrained(model_name, revision=revision)
+    model = AutoModel.from_pretrained(model_name, revision=revision, torch_dtype=torch.float32)
     result = {
         "model_name": model_name,
         "revision": revision,
         "tokenizer_class": tokenizer.__class__.__name__,
         "model_class": model.__class__.__name__,
+        "parameter_dtype": str(next(model.parameters()).dtype),
         "hidden_size": int(model.config.hidden_size),
         "prepared_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "config_path": str(config_source),
