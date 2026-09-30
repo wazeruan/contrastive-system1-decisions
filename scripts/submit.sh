@@ -83,6 +83,7 @@ export CSD_MODEL_CACHE_MANIFEST="$MODEL_MANIFEST"
 [[ "$MIN_FREE_GIB" =~ ^[0-9]+$ ]] && (( MIN_FREE_GIB >= 1 && MIN_FREE_GIB <= 100000 )) || die "minimum free space must be 1..100000 GiB"
 [[ "$BM25_NEGATIVES" =~ ^[0-9]+$ ]] && (( BM25_NEGATIVES <= 100 )) || die "BM25 negative count must be 0..100"
 [[ -z "$DEPENDENCY" || "$DEPENDENCY" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--dependency needs numeric Slurm job IDs separated by commas"
+REQUESTED_DEPENDENCY="$DEPENDENCY"
 
 case "$STAGE" in
   setup)
@@ -334,9 +335,71 @@ case "$STAGE" in
 esac
 [[ -f "$SBATCH_SCRIPT" ]] || die "missing Slurm entry point: $SBATCH_SCRIPT"
 
-COMMAND_JSON="$(python3 - "$STAGE" "$PROJECT_DIR" "$ACCOUNT" "$PARTITION" "$GPU_RESOURCE" "$GPU_COUNT" "$CPUS" "$MEMORY" "$WALL_TIME" "$DEPENDENCY" "$CONFIG" "$DATA_DIR" "$INPUT_JSON" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CATEGORY" "$CALIBRATION" "$BM25_NEGATIVES" "$REVISION" "$RESUME" "$ENV_SCRIPT" "$MODEL_MANIFEST" "$RESOURCE_PROFILE" "$PROFILE_NAME" "$PROFILE_GPU_OPTION" "$PROFILE_GPU_REQUEST" "$PROFILE_GPU_PARTITION" "$GPU_PROFILE_SHA256" <<'PY'
+resolve_dependencies() {
+  [[ -n "$DEPENDENCY" ]] || return 0
+  local -a requested_ids active_ids
+  local job_id queue_output queue_rc account_output account_rc account_line state exit_code active_count=0
+  IFS=',' read -r -a requested_ids <<< "$DEPENDENCY"
+  active_ids=()
+  for job_id in "${requested_ids[@]}"; do
+    queue_rc=0
+    queue_output="$(squeue -h -j "$job_id" -o '%T|%R' 2>&1)" || queue_rc=$?
+    case "$queue_output" in
+      *"Invalid job id specified"*) queue_output="" ;;
+      *) (( queue_rc == 0 )) || die "could not verify dependency job $job_id with squeue: $queue_output" ;;
+    esac
+    if [[ -n "$queue_output" ]]; then
+      [[ "$queue_output" != *$'\n'* && "$queue_output" == *"|"* && "${queue_output#*|}" != *"|"* ]] || \
+        die "unexpected squeue response for dependency job $job_id: $queue_output"
+      state="${queue_output%%|*}"
+      state="${state%%+*}"
+      state="${state%% *}"
+      case "$state" in
+        PENDING|RUNNING|SUSPENDED|COMPLETING|CONFIGURING|RESIZING|SIGNALING|STAGE_OUT|REQUEUED|REQUEUE_FED|REQUEUE_HOLD|RESV_DEL_HOLD|STOPPED|UPDATE_DB|EXPEDITING|POWER_UP_NODE)
+          active_ids+=("$job_id")
+          active_count=$((active_count + 1))
+          continue
+          ;;
+        COMPLETED|FAILED|CANCELLED|TIMEOUT|PREEMPTED|OUT_OF_MEMORY|NODE_FAIL|BOOT_FAIL|DEADLINE|REVOKED|SPECIAL_EXIT|LAUNCH_FAILED|RECONFIG_FAIL|COMPLETING*)
+          # Confirm terminal states and exit codes through accounting below.
+          ;;
+        *) die "unrecognized squeue state for dependency job $job_id: $queue_output" ;;
+      esac
+    fi
+
+    account_rc=0
+    account_output="$(sacct --parsable2 -n -X -j "$job_id" --format=State,ExitCode 2>&1)" || account_rc=$?
+    (( account_rc == 0 )) || die "could not verify dependency job $job_id with sacct: $account_output"
+    account_line="$(printf '%s\n' "$account_output" | head -n 1 | tr -d '[:space:]')"
+    [[ -n "$account_line" && "$account_line" == *"|"* ]] || \
+      die "dependency job $job_id has no verifiable Slurm accounting record"
+    IFS='|' read -r state exit_code <<< "$account_line"
+    state="${state%%+*}"
+    case "$state" in
+      COMPLETED)
+        [[ "$exit_code" == "0:0" ]] || die "dependency job $job_id is COMPLETED with nonzero exit code $exit_code"
+        echo "Dependency job $job_id already completed successfully; removing its stale afterok reference."
+        ;;
+      PENDING|RUNNING|SUSPENDED|COMPLETING|CONFIGURING|RESIZING|SIGNALING|STAGE_OUT|REQUEUED|REQUEUE_FED|REQUEUE_HOLD|RESV_DEL_HOLD|STOPPED|UPDATE_DB|EXPEDITING|POWER_UP_NODE)
+        active_ids+=("$job_id")
+        active_count=$((active_count + 1))
+        ;;
+      *) die "dependency job $job_id is not successful or active (sacct: $account_line)" ;;
+    esac
+  done
+  if (( active_count == 0 )); then
+    DEPENDENCY=""
+  else
+    local IFS=,
+    DEPENDENCY="${active_ids[*]}"
+  fi
+}
+
+resolve_dependencies
+
+COMMAND_JSON="$(python3 - "$STAGE" "$PROJECT_DIR" "$ACCOUNT" "$PARTITION" "$GPU_RESOURCE" "$GPU_COUNT" "$CPUS" "$MEMORY" "$WALL_TIME" "$DEPENDENCY" "$REQUESTED_DEPENDENCY" "$CONFIG" "$DATA_DIR" "$INPUT_JSON" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CATEGORY" "$CALIBRATION" "$BM25_NEGATIVES" "$REVISION" "$RESUME" "$ENV_SCRIPT" "$MODEL_MANIFEST" "$RESOURCE_PROFILE" "$PROFILE_NAME" "$PROFILE_GPU_OPTION" "$PROFILE_GPU_REQUEST" "$PROFILE_GPU_PARTITION" "$GPU_PROFILE_SHA256" <<'PY'
 import json, sys
-(stage, project, account, partition, gpu, gpu_count, cpus, memory, wall, dependency, config,
+(stage, project, account, partition, gpu, gpu_count, cpus, memory, wall, dependency, requested_dependency, config,
  data_dir, input_json, output_dir, checkpoint, data, category, calibration,
  bm25, revision, resume, environment_script, model_manifest, resource_profile, profile_name,
  profile_gpu_option, profile_gpu_request, profile_partition, profile_sha256) = sys.argv[1:]
@@ -357,6 +420,8 @@ print(json.dumps({
                "gpu_resource": gpu or None,
                "cpus_per_task": cpus, "memory": memory, "time": wall,
                "afterok_job_id": dependency or None},
+    "dependency_resolution": {"requested_afterok_job_id": requested_dependency or None,
+                              "submitted_afterok_job_id": dependency or None},
     "arguments": {"config": config or None, "data_dir": data_dir or None,
                   "input_json": input_json or None, "output_dir": output_dir,
                   "checkpoint": checkpoint or None, "data": data or None,
