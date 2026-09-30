@@ -90,7 +90,7 @@ If model preparation and H100 preflight have already been submitted, resume at t
   --model-job-id MODEL_JOB_ID --preflight-job-id PREFLIGHT_JOB_ID
 ```
 
-This mode verifies the existing setup, data, model, and preflight jobs. It reuses a pending/running preflight as the training dependency and also gates on model preparation if that job is still active. If both jobs completed successfully, it submits training without expired dependency IDs. Use this only when no training job was accepted in the previous attempt.
+This mode verifies the existing setup, data, model, and preflight jobs. It reuses a pending/running preflight as the training dependency and also gates on model preparation if that job is still active. If both jobs completed successfully, it submits training without expired dependency IDs. It always starts a fresh training run; use it when no earlier training submission is still pending, running, or unverified. Confirm a failed or scientifically invalid prior run is terminal before retrying.
 
 For manual stage-by-stage control, submit the stages below. `HF_TOKEN` is needed only for the xLAM preparation command.
 

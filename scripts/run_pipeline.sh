@@ -28,7 +28,9 @@ BFCL/model preparation. Add --bfcl-job-id and --bfcl-dir to reuse completed BFCL
 To resume after model preparation and H100 preflight, add --resume-after-preflight,
 --model-job-id, and --preflight-job-id. This mode also requires the completed
 BFCL data so no earlier pipeline stage needs to be submitted again. Use it only
-when no training job was accepted in the previous attempt.
+when no earlier training submission is still pending, running, or unverified.
+It starts a fresh training run; confirm a failed or invalid prior run is terminal
+before retrying.
 
 Options:
   --account ACCOUNT       Required Slurm account
