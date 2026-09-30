@@ -134,6 +134,20 @@ def _loss_and_metrics(
         reciprocal_rank += max((1.0 / rank for rank in ranks), default=0.0)
         nll_total += float(-(target * log_probs).sum().detach().cpu().item())
     loss = torch.stack(row_losses).mean()
+    if not torch.isfinite(loss).item():
+        for logits, example in zip(logits_by_row, batch):
+            target = torch.tensor(example.target_weights, dtype=logits.dtype, device=logits.device)
+            if not torch.isfinite(logits).all().item():
+                raise FloatingPointError(f"non-finite candidate scores for example {example.example_id}")
+            if not torch.isfinite(target).all().item():
+                raise FloatingPointError(f"non-finite target weights for example {example.example_id}")
+            log_probs = F.log_softmax(logits.float(), dim=0)
+            if not torch.isfinite(log_probs).all().item():
+                raise FloatingPointError(f"non-finite log probabilities for example {example.example_id}")
+            row_loss = -(target * log_probs).sum()
+            if not torch.isfinite(row_loss).item():
+                raise FloatingPointError(f"non-finite contrastive loss for example {example.example_id}")
+        raise FloatingPointError("non-finite contrastive loss for the batch")
     count = len(batch)
     metrics = {
         "accuracy": correct / count,
@@ -164,7 +178,8 @@ def _run_epoch(
             with torch.autocast(
                 device_type="cuda",
                 dtype=torch.bfloat16,
-                enabled=(device.type == "cuda" and torch.cuda.is_bf16_supported()),
+                enabled=(device.type == "cuda" and bool(config.get("use_bf16", True))
+                         and torch.cuda.is_bf16_supported()),
             ):
                 logits = model.score_groups(
                     queries,
@@ -177,7 +192,11 @@ def _run_epoch(
                 loss, metrics = _loss_and_metrics(logits, batch)
             if training:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), float(config["max_grad_norm"]))
+                gradient_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), float(config["max_grad_norm"])
+                )
+                if not torch.isfinite(gradient_norm).item():
+                    raise FloatingPointError("non-finite gradient norm; optimizer update skipped")
                 optimizer.step()
         batch_count = len(batch)
         totals["loss"] += float(loss.detach().cpu().item()) * batch_count

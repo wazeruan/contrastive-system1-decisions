@@ -46,6 +46,8 @@ At inference, pass the request and exact candidate schemas, compute one score pe
 
 The default model is Microsoft's 184M-parameter DeBERTa-v3-base, pinned to a repository revision and licensed MIT. The initial conservative profile uses BF16 on one H100, AdamW, four query groups per batch, gradient checkpointing, and early stopping on validation NLL. `configs/` contains the three architecture variants with the same data/model/training settings. The separate-encoder model has roughly twice the backbone parameters; report quality, memory, and latency together. Increase the batch only after an allocated-node pilot.
 
+For numerical debugging, `configs/shared-heads-h100-fp32.json` keeps the seed-42 settings but disables BF16 autocast consistently for training, calibration, and evaluation. The default remains BF16 on supported GPUs. Non-finite scores, losses, gradients, or target weights now fail with a stage-specific diagnostic instead of silently producing an unusable checkpoint.
+
 ## Local project setup
 
 This is an SSH-first, headless project. No GUI or notebook is required. Place the checkout, model cache, and outputs on storage visible to both CPU and H100 nodes; the CPU download stages and GPU training stages share those paths. If the cluster provides preferred shared cache locations, set `HF_HOME` and optionally `CSD_MODEL_CACHE_MANIFEST` in the shared environment script so the preparation and GPU jobs use the same paths. The manifest variable can be a project-relative or absolute path and is included in submission receipts. For local development, prepare an isolated environment with:

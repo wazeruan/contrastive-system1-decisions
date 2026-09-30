@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from .runtime import preflight_gpu, write_started_marker
 def _metrics(logits_rows: list[torch.Tensor], examples: list[DecisionExample], temperature: float) -> dict[str, Any]:
     if len(logits_rows) != len(examples) or not examples:
         raise ValueError("evaluation requires aligned, nonempty scores and examples")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("evaluation temperature must be finite and positive")
     top1: list[float] = []
     reciprocal_ranks: list[float] = []
     nlls: list[float] = []
@@ -26,6 +29,12 @@ def _metrics(logits_rows: list[torch.Tensor], examples: list[DecisionExample], t
     correctness: list[float] = []
     for logits, example in zip(logits_rows, examples):
         target = torch.tensor(example.target_weights, dtype=torch.float32)
+        if logits.shape != target.shape:
+            raise ValueError(f"{example.example_id}: score and target shapes do not match")
+        if not torch.isfinite(logits).all().item():
+            raise FloatingPointError(f"{example.example_id}: non-finite candidate scores")
+        if not torch.isfinite(target).all().item():
+            raise FloatingPointError(f"{example.example_id}: non-finite target weights")
         probabilities = torch.softmax(logits.float() / temperature, dim=0)
         predicted = int(torch.argmax(probabilities).item())
         positive = torch.nonzero(target > 0, as_tuple=False).flatten().tolist()
@@ -47,7 +56,7 @@ def _metrics(logits_rows: list[torch.Tensor], examples: list[DecisionExample], t
             mean_confidence = float(np.mean([confidences[i] for i in members]))
             mean_accuracy = float(np.mean([correctness[i] for i in members]))
             ece += len(members) / len(examples) * abs(mean_confidence - mean_accuracy)
-    return {
+    metrics = {
         "examples": len(examples),
         "top1_tool_accuracy": float(np.mean(top1)),
         "mrr": float(np.mean(reciprocal_ranks)),
@@ -58,6 +67,9 @@ def _metrics(logits_rows: list[torch.Tensor], examples: list[DecisionExample], t
         "temperature": temperature,
         "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence",
     }
+    if any(not math.isfinite(value) for value in metrics.values() if isinstance(value, (int, float))):
+        raise FloatingPointError("evaluation produced a non-finite metric")
+    return metrics
 
 
 def evaluate_jsonl(checkpoint: str | Path, data_path: str | Path, output_path: str | Path,
@@ -146,5 +158,5 @@ def _write_result(result: dict[str, Any], output_path: str | Path) -> None:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
-    temporary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     os.replace(temporary, destination)

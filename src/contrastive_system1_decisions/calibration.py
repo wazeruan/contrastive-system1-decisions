@@ -47,7 +47,8 @@ def collect_logits(
         with torch.autocast(
             device_type="cuda",
             dtype=torch.bfloat16,
-            enabled=(device.type == "cuda" and torch.cuda.is_bf16_supported()),
+            enabled=(device.type == "cuda" and bool(config.get("use_bf16", True))
+                     and torch.cuda.is_bf16_supported()),
         ):
             logits = model.score_groups(
                 [row.query for row in batch],
@@ -57,14 +58,39 @@ def collect_logits(
                 int(config["max_action_length"]),
                 device,
             )
-        logits_rows.extend(row.detach().float().cpu() for row in logits)
+        for row, example in zip(logits, batch):
+            scores = row.detach().float().cpu()
+            if not torch.isfinite(scores).all().item():
+                raise FloatingPointError(f"non-finite candidate scores for example {example.example_id}")
+            logits_rows.append(scores)
         target_rows.extend(torch.tensor(row.target_weights, dtype=torch.float32) for row in batch)
     return logits_rows, target_rows
 
 
 def _mean_nll(logits: list[torch.Tensor], targets: list[torch.Tensor], temperature: torch.Tensor) -> torch.Tensor:
-    losses = [-(target * F.log_softmax(row / temperature, dim=0)).sum() for row, target in zip(logits, targets)]
-    return torch.stack(losses).mean()
+    if not logits or len(logits) != len(targets):
+        raise ValueError("calibration requires aligned, nonempty logits and targets")
+    if temperature.numel() != 1 or not torch.isfinite(temperature).all().item():
+        raise FloatingPointError("calibration temperature is non-finite or not scalar")
+    if temperature.item() <= 0:
+        raise ValueError("calibration temperature must be positive")
+
+    losses: list[torch.Tensor] = []
+    for row, target in zip(logits, targets):
+        if row.shape != target.shape:
+            raise ValueError("calibration score and target shapes do not match")
+        if not torch.isfinite(row).all().item():
+            raise FloatingPointError("calibration received non-finite candidate scores")
+        if not torch.isfinite(target).all().item():
+            raise FloatingPointError("calibration received non-finite target weights")
+        loss = -(target * F.log_softmax(row / temperature, dim=0)).sum()
+        if not torch.isfinite(loss).item():
+            raise FloatingPointError("calibration produced a non-finite NLL")
+        losses.append(loss)
+    mean_loss = torch.stack(losses).mean()
+    if not torch.isfinite(mean_loss).item():
+        raise FloatingPointError("calibration produced a non-finite mean NLL")
+    return mean_loss
 
 
 def fit_temperature(checkpoint: str | Path, data_path: str | Path, output_path: str | Path,
@@ -94,10 +120,14 @@ def fit_temperature(checkpoint: str | Path, data_path: str | Path, output_path: 
         temperature = initial.exp().clamp(min=0.05, max=20.0)
         loss = _mean_nll(logits, targets, temperature)
         loss.backward()
+        if initial.grad is None or not torch.isfinite(initial.grad).all().item():
+            raise FloatingPointError("calibration produced a non-finite temperature gradient")
         return loss
 
     before = float(_mean_nll(logits, targets, torch.tensor(1.0)).item())
     optimizer.step(closure)
+    if not torch.isfinite(initial.detach()).all().item():
+        raise FloatingPointError("temperature optimizer produced a non-finite parameter")
     temperature = float(initial.detach().exp().clamp(min=0.05, max=20.0).item())
     after = float(_mean_nll(logits, targets, torch.tensor(temperature)).item())
     result = {
@@ -112,6 +142,6 @@ def fit_temperature(checkpoint: str | Path, data_path: str | Path, output_path: 
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
-    temporary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     os.replace(temporary, destination)
     return result

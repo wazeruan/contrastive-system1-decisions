@@ -34,6 +34,8 @@ class DecisionExample:
             raise ValueError(f"{self.example_id}: at least two candidates are required")
         if len(self.candidates) != len(self.target_weights):
             raise ValueError(f"{self.example_id}: candidates/targets have different lengths")
+        if any(not math.isfinite(weight) for weight in self.target_weights):
+            raise ValueError(f"{self.example_id}: target weights must be finite")
         if any(weight < 0 for weight in self.target_weights):
             raise ValueError(f"{self.example_id}: target weights must be nonnegative")
         if abs(sum(self.target_weights) - 1.0) > 1e-5:
