@@ -323,6 +323,10 @@ case "$STAGE" in
 esac
 
 echo "Submitting $STAGE; resolved output: $RUN_DIR"
+echo "RUN_DIR=$RUN_DIR"
+echo "RECEIPT=$RECEIPT"
+echo "LOG_OUT=$LOG_OUT"
+echo "LOG_ERR=$LOG_ERR"
 sbatch_rc=0
 if sbatch_output="$(sbatch "${sbatch_args[@]}" "$SBATCH_SCRIPT" "${stage_args[@]}" 2>&1)"; then
   :
@@ -364,7 +368,7 @@ fi
 }
 python3 "$PROJECT_DIR/scripts/receipt.py" update --path "$RECEIPT" --state SUBMITTED --job-id "$JOB_ID" --if-nonterminal
 LOG_OUT="${LOG_OUT//%j/$JOB_ID}"; LOG_ERR="${LOG_ERR//%j/$JOB_ID}"
-echo "JOB_ID=$JOB_ID"; echo "RUN_DIR=$RUN_DIR"; echo "RECEIPT=$RECEIPT"; echo "LOG_OUT=$LOG_OUT"; echo "LOG_ERR=$LOG_ERR"
+echo "JOB_ID=$JOB_ID"
 START_MARKER="$RECEIPT.started.json"
 
 show_failure_logs() {

@@ -9,17 +9,19 @@ CONTINUE_AFTER_XLAM=0 EXISTING_SETUP_JOB_ID="" EXISTING_XLAM_JOB_ID="" EXISTING_
 EXISTING_BFCL_JOB_ID="" EXISTING_BFCL_DIR=""
 RESUME_AFTER_SETUP=0
 RESUME_AFTER_PREFLIGHT=0 EXISTING_MODEL_JOB_ID="" EXISTING_PREFLIGHT_JOB_ID=""
+TOKEN_FOR_XLAM="${HF_TOKEN:-}"
+unset HF_TOKEN
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/run_pipeline.sh --account ACCOUNT [options]
+Usage: scripts/csd run --account ACCOUNT [options]
 
 Submits one baseline dependency chain:
   setup -> xLAM/BFCL/model preparation -> H100 preflight -> train
         -> calibration -> xLAM test evaluation and BFCL live_multiple evaluation
 
-HF_TOKEN must be set in the environment for the gated xLAM download. It is
-forwarded only to that preparation stage. The command queues jobs with afterok
+If HF_TOKEN is not already set, the interactive launcher asks for it securely.
+It is forwarded only to the xLAM preparation stage. The command queues jobs with afterok
 dependencies; Slurm runs each stage only after its required predecessors succeed.
 
 To continue after an already completed xLAM preparation, pass
@@ -55,6 +57,8 @@ Options:
   --preflight-job-id ID   Existing active or successful H100 preflight job
   --help                  Show this help
 
+After launch, use `scripts/csd status` and `scripts/csd results` to follow this run.
+
 The default config is the shared-heads seed-42 baseline. The pipeline submits
 training, calibration, xLAM test evaluation, and the BFCL live_multiple slice.
 USAGE
@@ -87,7 +91,7 @@ while (($#)); do
     --resume-after-setup) RESUME_AFTER_SETUP=1; CONTINUE_AFTER_XLAM=1; shift ;;
     --resume-after-preflight) RESUME_AFTER_PREFLIGHT=1; CONTINUE_AFTER_XLAM=1; shift ;;
     --help|-h) usage; exit 0 ;;
-    *) die "unknown option: $1" ;;
+  *) die "unknown option: $1" ;;
   esac
 done
 
@@ -95,7 +99,12 @@ done
 [[ -z "$PARTITION" || "$PARTITION" =~ ^[[:alnum:]_.-]+$ ]] || die "invalid --partition"
 [[ -z "$GPU_RESOURCE" || "$GPU_RESOURCE" =~ ^[[:alnum:]_.:=+-]+$ ]] || die "invalid GPU resource syntax"
 if [[ "$CONTINUE_AFTER_XLAM" == 0 ]]; then
-  [[ -n "${HF_TOKEN:-}" ]] || die "HF_TOKEN must be set in the environment for gated xLAM data preparation"
+  if [[ -z "$TOKEN_FOR_XLAM" ]]; then
+    [[ -t 0 ]] || die "HF_TOKEN is required for gated xLAM data preparation (set it in the environment for noninteractive launch)"
+    read -r -s -p "Hugging Face token: " TOKEN_FOR_XLAM
+    printf '\n' >&2
+    [[ -n "$TOKEN_FOR_XLAM" ]] || die "Hugging Face token cannot be empty"
+  fi
   [[ -z "$EXISTING_SETUP_JOB_ID$EXISTING_XLAM_JOB_ID$EXISTING_XLAM_DIR$EXISTING_BFCL_JOB_ID$EXISTING_BFCL_DIR" ]] || \
     die "existing job/data options require --continue-after-xlam"
 else
@@ -131,9 +140,36 @@ if [[ -n "$ENV_SCRIPT" ]]; then
 fi
 
 SUBMIT="$PROJECT_DIR/scripts/submit.sh"
+PIPELINE_TOOL="$PROJECT_DIR/scripts/project.py"
 base_args=(--project-dir "$PROJECT_DIR" --account "$ACCOUNT")
 if [[ -n "$ENV_SCRIPT" ]]; then base_args+=(--env-script "$ENV_SCRIPT"); fi
 if [[ -n "$PARTITION" ]]; then base_args+=(--partition "$PARTITION"); fi
+
+pipeline_init="$(python3 "$PIPELINE_TOOL" init --project-dir "$PROJECT_DIR" --account "$ACCOUNT" --config "$CONFIG")"
+PIPELINE_FILE="$(printf '%s\n' "$pipeline_init" | sed -n 's/^PIPELINE_FILE=//p')"
+PIPELINE_ID="$(printf '%s\n' "$pipeline_init" | sed -n 's/^PIPELINE_ID=//p')"
+[[ -n "$PIPELINE_FILE" && -n "$PIPELINE_ID" ]] || die "could not create pipeline manifest"
+LAST_PIPELINE_STAGE=""
+finish_pipeline() {
+  local result=$?
+  trap - EXIT
+  python3 "$PIPELINE_TOOL" finish --manifest "$PIPELINE_FILE" --exit-code "$result" \
+    --last-stage "$LAST_PIPELINE_STAGE" >/dev/null 2>&1 || true
+  exit "$result"
+}
+trap finish_pipeline EXIT
+echo "Pipeline: $PIPELINE_ID ($PIPELINE_FILE)"
+
+record_reused_stage() {
+  local label="$1" job_id="$2" run_dir="${3:-}" data_path="${4:-}"
+  local state="${5:-UNKNOWN/UNVERIFIED}" phase="${6:-before-verification}"
+  local args=(register --manifest "$PIPELINE_FILE" --project-dir "$PROJECT_DIR"
+    --stage "$label" --job-id "$job_id" --reused --state "$state")
+  [[ -z "$run_dir" ]] || args+=(--run-dir "$run_dir")
+  [[ -z "$data_path" ]] || args+=(--data-path "$data_path")
+  [[ "$phase" != before-verification ]] || args+=(--no-receipt-lookup)
+  python3 "$PIPELINE_TOOL" "${args[@]}" >/dev/null
+}
 
 LAST_JOB_ID="" LAST_RUN_DIR="" LAST_RECEIPT="" UNVERIFIED_STAGES=""
 SETUP_DEPENDENCY="" XLAM_DEPENDENCY="" BFCL_DEPENDENCY="" MODEL_DEPENDENCY="" PREFLIGHT_DEPENDENCY=""
@@ -145,11 +181,20 @@ base_args+=(--startup-timeout-seconds "$PIPELINE_STARTUP_TIMEOUT")
 submit_stage() {
   local label="$1" output rc line receipt_state=""
   shift
+  LAST_PIPELINE_STAGE="$label"
   echo "Submitting pipeline stage: $label"
-  if output="$("$@" 2>&1)"; then
-    rc=0
+  if [[ "$label" == prepare-xlam ]]; then
+    if output="$(HF_TOKEN="$TOKEN_FOR_XLAM" "$@" 2>&1)"; then
+      rc=0
+    else
+      rc=$?
+    fi
   else
-    rc=$?
+    if output="$("$@" 2>&1)"; then
+      rc=0
+    else
+      rc=$?
+    fi
   fi
   printf '%s\n' "$output"
   LAST_JOB_ID="" LAST_RUN_DIR="" LAST_RECEIPT=""
@@ -160,6 +205,13 @@ submit_stage() {
       RECEIPT=*) LAST_RECEIPT="${line#RECEIPT=}" ;;
     esac
   done <<< "$output"
+  if [[ -n "$LAST_RECEIPT" ]]; then
+    local register_args=(--manifest "$PIPELINE_FILE" --project-dir "$PROJECT_DIR" --stage "$label"
+      --receipt "$LAST_RECEIPT")
+    [[ -z "$LAST_JOB_ID" ]] || register_args+=(--job-id "$LAST_JOB_ID")
+    [[ -z "$LAST_RUN_DIR" ]] || register_args+=(--run-dir "$LAST_RUN_DIR")
+    python3 "$PIPELINE_TOOL" register "${register_args[@]}" >/dev/null
+  fi
   if (( rc != 0 )); then
     if [[ -n "$LAST_RECEIPT" && -f "$LAST_RECEIPT" ]]; then
       receipt_state="$(python3 - "$LAST_RECEIPT" <<'PY'
@@ -206,11 +258,13 @@ verify_completed_job() {
   state="${state%%+}"
   [[ "$state" == COMPLETED && "$exit_code" == "0:0" ]] || \
     die "$label job $job_id is not confirmed successful (sacct: ${compact:-no record})"
+  JOB_DISPOSITION=COMPLETED
   echo "Verified $label job $job_id completed successfully."
 }
 
 verify_active_or_completed_job() {
   local label="$1" job_id="$2" queue_output acct_output compact state state_field exit_code queue_rc=0
+  JOB_STATE=""
   queue_output="$(squeue -h -j "$job_id" -o '%T|%R' 2>&1)" || queue_rc=$?
   case "$queue_output" in
     "Invalid job id specified"|"slurm_load_jobs error: Invalid job id specified")
@@ -236,6 +290,7 @@ verify_active_or_completed_job() {
             die "unexpected squeue state for $label job $job_id: $queue_output"
             ;;
         esac
+        JOB_STATE="$state"
       fi
       ;;
   esac
@@ -252,6 +307,7 @@ verify_active_or_completed_job() {
   state="${state%%+}"
   if [[ "$state" == COMPLETED && "$exit_code" == "0:0" ]]; then
     JOB_DISPOSITION=COMPLETED
+    JOB_STATE=SUCCEEDED
     echo "Verified $label job $job_id completed successfully."
     return
   fi
@@ -269,6 +325,8 @@ if [[ "$CONTINUE_AFTER_XLAM" == 1 ]]; then
     XLAM_DIR="$PROJECT_DIR/$EXISTING_XLAM_DIR"
   fi
   [[ -d "$XLAM_DIR" ]] || die "xLAM data directory does not exist: $XLAM_DIR"
+  record_reused_stage setup "$SETUP_JOB_ID"
+  record_reused_stage prepare-xlam "$XLAM_JOB_ID" "$XLAM_DIR" "$XLAM_DIR"
   python3 - "$XLAM_DIR" <<'PY'
 import json, sys
 import math
@@ -322,7 +380,9 @@ for split in ("train", "validation", "calibration", "test"):
         raise SystemExit(f"xLAM {split} count mismatch: manifest={expected}, file={actual}")
 PY
   verify_completed_job setup "$SETUP_JOB_ID"
+  record_reused_stage setup "$SETUP_JOB_ID" "" "" SUCCEEDED verified
   verify_completed_job xLAM "$XLAM_JOB_ID"
+  record_reused_stage prepare-xlam "$XLAM_JOB_ID" "$XLAM_DIR" "$XLAM_DIR" SUCCEEDED verified
   if [[ -n "$EXISTING_BFCL_JOB_ID" ]]; then
     BFCL_JOB_ID="$EXISTING_BFCL_JOB_ID"
     if [[ "$EXISTING_BFCL_DIR" == /* ]]; then
@@ -331,7 +391,9 @@ PY
       BFCL_DIR="$PROJECT_DIR/$EXISTING_BFCL_DIR"
     fi
     [[ -d "$BFCL_DIR" ]] || die "BFCL data directory does not exist: $BFCL_DIR"
+    record_reused_stage prepare-bfcl "$BFCL_JOB_ID" "$BFCL_DIR" "$BFCL_DIR"
     verify_completed_job BFCL "$BFCL_JOB_ID"
+    record_reused_stage prepare-bfcl "$BFCL_JOB_ID" "$BFCL_DIR" "$BFCL_DIR" SUCCEEDED verified
     python3 - "$BFCL_DIR" <<'PY'
 import json, sys
 from pathlib import Path
@@ -372,23 +434,29 @@ else
     --dependency "$SETUP_JOB_ID" --bm25-negatives 0
   XLAM_JOB_ID="$LAST_JOB_ID" XLAM_DIR="$LAST_RUN_DIR"
   XLAM_DEPENDENCY="$XLAM_JOB_ID"
-  unset HF_TOKEN
+  unset TOKEN_FOR_XLAM
 fi
 
 if [[ "$RESUME_AFTER_PREFLIGHT" == 1 ]]; then
+  record_reused_stage prepare-model "$EXISTING_MODEL_JOB_ID"
+  record_reused_stage preflight "$EXISTING_PREFLIGHT_JOB_ID"
   verify_active_or_completed_job model "$EXISTING_MODEL_JOB_ID"
   MODEL_JOB_ID="$EXISTING_MODEL_JOB_ID"
   MODEL_JOB_DISPOSITION="$JOB_DISPOSITION"
+  MODEL_JOB_STATE="${JOB_STATE:-SUCCEEDED}"
   if [[ "$MODEL_JOB_DISPOSITION" == ACTIVE ]]; then
     MODEL_DEPENDENCY="$MODEL_JOB_ID"
   fi
+  record_reused_stage prepare-model "$MODEL_JOB_ID" "" "" "$MODEL_JOB_STATE" verified
   verify_active_or_completed_job preflight "$EXISTING_PREFLIGHT_JOB_ID"
   PREFLIGHT_JOB_ID="$EXISTING_PREFLIGHT_JOB_ID"
+  PREFLIGHT_JOB_STATE="${JOB_STATE:-SUCCEEDED}"
   if [[ "$JOB_DISPOSITION" == ACTIVE ]]; then
     PREFLIGHT_DEPENDENCY="$PREFLIGHT_JOB_ID"
   elif [[ "$MODEL_JOB_DISPOSITION" != COMPLETED ]]; then
     die "preflight job $PREFLIGHT_JOB_ID completed before model job $MODEL_JOB_ID was confirmed successful"
   fi
+  record_reused_stage preflight "$PREFLIGHT_JOB_ID" "" "" "$PREFLIGHT_JOB_STATE" verified
   echo "Reusing model job $MODEL_JOB_ID and preflight job $PREFLIGHT_JOB_ID; resuming at training."
 else
   if [[ -z "$BFCL_JOB_ID" ]]; then
@@ -458,6 +526,9 @@ Pipeline queued with afterok dependencies. Jobs run only after their required pr
   xLAM evaluation:$XLAM_EVALUATION_JOB_ID  ($XLAM_EVALUATION_DIR)
   BFCL evaluation:$BFCL_EVALUATION_JOB_ID  ($BFCL_EVALUATION_DIR)
 SUMMARY
+
+echo "Status:  ./scripts/csd status $PIPELINE_ID"
+echo "Results: ./scripts/csd results $PIPELINE_ID"
 
 if [[ -n "$UNVERIFIED_STAGES" ]]; then
   echo "Startup remains unverified for: $UNVERIFIED_STAGES" >&2

@@ -48,95 +48,32 @@ The default model is Microsoft's 184M-parameter DeBERTa-v3-base, pinned to a rep
 
 For numerical debugging, `configs/shared-heads-h100-fp32.json` keeps the seed-42 settings but disables BF16 autocast consistently for training, calibration, and evaluation. The default remains BF16 on supported GPUs. Non-finite scores, losses, gradients, or target weights now fail with a stage-specific diagnostic instead of silently producing an unusable checkpoint.
 
-## Local project setup
+## Launch and monitor
 
-This is an SSH-first, headless project. No GUI or notebook is required. Place the checkout, model cache, and outputs on storage visible to both CPU and H100 nodes; the CPU download stages and GPU training stages share those paths. If the cluster provides preferred shared cache locations, set `HF_HOME` and optionally `CSD_MODEL_CACHE_MANIFEST` in the shared environment script so the preparation and GPU jobs use the same paths. The manifest variable can be a project-relative or absolute path and is included in submission receipts. For local development, prepare an isolated environment with:
-
-```bash
-uv sync
-```
-
-After accepting the gated xLAM conditions and logging in to Hugging Face, set up the environment in a CPU allocation, then prepare data in separate CPU jobs. Supply `--account`; the wrapper uses the cluster's default partition when `--partition` is omitted. GPU stages request `--gpus=h100:1`. The preflight checks that the allocation is an H100 with at least 75 GiB and BF16 support before model work starts. If the default partition does not provide that GPU, override it with the cluster's H100 partition using `--partition`. If your site uses a different Slurm GPU type name, override the request with `--gpu-resource 'gpu:<site-type>:1'`, using the exact type configured at that site.
-
-To queue the full seed-42 baseline in one command, enter the Hugging Face token at the hidden prompt. The launcher submits setup, xLAM/BFCL/model preparation, H100 preflight, training, calibration, xLAM test evaluation, and BFCL `live_multiple` evaluation with `afterok` dependencies. It requires `HF_TOKEN` in its environment and forwards it only to xLAM preparation; it never accepts the token as a command-line argument or writes it to receipts/logs.
+Accept the gated xLAM dataset conditions before running. From the checkout on a Canadian Alliance system:
 
 ```bash
-HF_TOKEN="$(python3 -c 'import getpass; print(getpass.getpass("Hugging Face token: "))')" \
-  ./scripts/run_pipeline.sh --account YOUR_SLURM_ACCOUNT
+git pull --ff-only
+./scripts/csd run --account YOUR_SLURM_ACCOUNT
 ```
 
-The command prints each job ID, receipt, and resolved run directory. It queues the dependent jobs; Slurm starts each only after its prerequisites succeed. Add `--env-script PATH` if Python/uv setup must be loaded on the cluster. Use `--help` to see optional project, config, partition, and GPU resource overrides.
+The launcher securely prompts for a Hugging Face token when needed. It submits setup, xLAM/BFCL/model preparation, GPU preflight, training, calibration, and both evaluations as one dependency chain. The token is passed only to xLAM preparation and is never written to the pipeline manifest, receipts, or logs. GPU allocation uses the checked-in H100 profile. Use `--help` for partition, config, custom storage, and recovery options.
 
-The pipeline uses a short, bounded startup check for each submission so it can queue the complete dependency chain promptly. A stage reported as pending remains queued; downstream stages wait through `afterok` dependencies. Training depends on the H100 preflight, which already depends on model preparation.
-
-If xLAM preparation completed but the pipeline wrapper stopped before submitting later stages, continue without downloading xLAM again. Supply the successful setup/xLAM job IDs and the existing prepared-data directory. The continuation refreshes the environment from the current lockfile. If BFCL preparation also completed, pass its job ID and directory to reuse it:
+Each launch gets a pipeline ID and one durable manifest at `runs/pipelines/<pipeline-id>/pipeline.json`, linking all submitted or reused jobs to their Slurm IDs, per-stage receipts, logs, and output directories. Check progress or generate a metrics summary with:
 
 ```bash
-./scripts/run_pipeline.sh --account YOUR_SLURM_ACCOUNT --continue-after-xlam \
-  --setup-job-id SETUP_JOB_ID --xlam-job-id XLAM_JOB_ID \
-  --xlam-dir data/processed/xlam \
-  --bfcl-job-id BFCL_JOB_ID --bfcl-dir data/benchmark/bfcl
+./scripts/csd status
+./scripts/csd results
+./scripts/csd list
 ```
 
-The BFCL arguments are optional as a pair. The continuation validates completed Slurm states and prepared data, then submits any missing data/model preparation, H100 preflight, training, calibration, and evaluations with `afterok` dependencies.
+`status` follows the latest pipeline by default and reconciles `squeue`, `sacct`, and the stage receipts. `status PIPELINE_ID` selects an older run. `results` prints available checkpoint/calibration/evaluation artifacts and metrics, then writes `runs/pipelines/<pipeline-id>/RESULTS.md`; run it again after jobs finish to refresh the summary. A queued or running job is not a completed result. Slurm receipts and UTC logs remain under `logs/submissions/` for failure diagnostics.
 
-If setup and xLAM preparation completed but the pipeline stopped before later stages, add `--resume-after-setup` to reuse the successful setup job and continue with model preparation without queueing setup again. The setup and xLAM job IDs, plus any supplied BFCL job ID, need successful `sacct` records; the xLAM data and any reused BFCL data must exist. This mode always starts a fresh training run later in the chain.
+If the launcher stops partway through, check `./scripts/csd status` first. Reuse completed stages only with the existing recovery options shown by `./scripts/csd run --help`; do not resubmit a stage whose scheduler state is still unknown. The wrapper checks startup for each submission, records even partial chains, and uses `afterok` so dependent work waits for successful predecessors.
 
-If model preparation and H100 preflight have already been submitted, resume at training and reuse those jobs instead of submitting them again:
+For headless setup, provide `--env-script PATH` if the cluster needs modules or a shared `uv` location. Point `HF_HOME` and `CSD_MODEL_CACHE_MANIFEST` at storage visible to CPU and GPU nodes when the site has preferred locations. Keep durable outputs on storage appropriate to their lifetime; Alliance scratch storage is purgeable. Do not run downloads, data preparation, or training on a login node.
 
-```bash
-./scripts/run_pipeline.sh --account YOUR_SLURM_ACCOUNT --resume-after-preflight \
-  --setup-job-id SETUP_JOB_ID --xlam-job-id XLAM_JOB_ID \
-  --xlam-dir data/processed/xlam \
-  --bfcl-job-id BFCL_JOB_ID --bfcl-dir data/benchmark/bfcl \
-  --model-job-id MODEL_JOB_ID --preflight-job-id PREFLIGHT_JOB_ID
-```
-
-This mode verifies the existing setup, data, model, and preflight jobs. It reuses a pending/running preflight as the training dependency and also gates on model preparation if that job is still active. If both jobs completed successfully, it submits training without expired dependency IDs. It always starts a fresh training run; use it when no earlier training submission is still pending, running, or unverified. Confirm a failed or scientifically invalid prior run is terminal before retrying.
-
-For manual stage-by-stage control, submit the stages below. `HF_TOKEN` is needed only for the xLAM preparation command.
-
-```bash
-./scripts/submit.sh --stage setup --account "$SLURM_ACCOUNT"
-./scripts/submit.sh --stage prepare-xlam --account "$SLURM_ACCOUNT" \
-  --dependency SETUP_JOB_ID --bm25-negatives 0
-./scripts/submit.sh --stage prepare-bfcl --account "$SLURM_ACCOUNT" \
-  --dependency SETUP_JOB_ID
-./scripts/submit.sh --stage prepare-model --account "$SLURM_ACCOUNT" \
-  --config configs/shared-heads-h100.json --dependency SETUP_JOB_ID
-```
-
-Replace job ID placeholders with the preceding command's printed `JOB_ID`. `prepare-model` downloads the pinned DeBERTa weights in a CPU allocation; GPU jobs then run with Hugging Face offline mode and require the matching cache manifest. If the cluster exposes Python/uv through modules, provide a shared shell setup file with `--env-script PATH`; it is sourced on the submit and compute nodes. Run `--stage preflight` after setup to confirm the default queue grants the required H100 before a long training job. `HF_TOKEN` is forwarded only to `prepare-xlam`; never put it in a command-line argument, config file, Slurm log, or Git. You must accept the dataset conditions yourself. The BFCL snapshot is public and Apache-2.0 licensed.
-
-## Train and evaluate
-
-Once setup and data jobs have completed, run the three architecture variants. Each run directory is claimed atomically; if a requested name exists, the wrapper uses the next numeric suffix. Use `--dependency JOB_ID` to connect stages with `afterok` semantics when an input is still being produced by another Slurm job.
-
-```bash
-./scripts/submit.sh --stage preflight --account "$SLURM_ACCOUNT" \
-  --dependency MODEL_CACHE_JOB_ID
-
-./scripts/submit.sh --stage train --account "$SLURM_ACCOUNT" \
-  --config configs/shared-heads-h100.json \
-  --data-dir XLAM_RUN_DIR --dependency MODEL_CACHE_JOB_ID,XLAM_JOB_ID
-
-./scripts/submit.sh --stage calibrate --account "$SLURM_ACCOUNT" \
-  --checkpoint RUN_DIR/checkpoints/best.pt \
-  --data XLAM_RUN_DIR/calibration.jsonl --dependency TRAIN_JOB_ID
-
-./scripts/submit.sh --stage evaluate --account "$SLURM_ACCOUNT" \
-  --checkpoint RUN_DIR/checkpoints/best.pt \
-  --data XLAM_RUN_DIR/test.jsonl --calibration CALIBRATION_RUN_DIR/calibration.json \
-  --dependency CALIBRATION_JOB_ID
-
-./scripts/submit.sh --stage benchmark --account "$SLURM_ACCOUNT" \
-  --checkpoint RUN_DIR/checkpoints/best.pt \
-  --data-dir BFCL_DATA_DIR --category live_multiple --dependency BFCL_PREP_JOB_ID
-```
-
-Replace `XLAM_RUN_DIR`, `BFCL_DATA_DIR`, `RUN_DIR`, `CALIBRATION_RUN_DIR`, and job ID placeholders with the printed values. Training can be resumed only with an explicit `--resume --output-dir EXISTING_RUN_DIR`; it verifies the saved config and checkpoint. Use `--stage evaluate` for held-out scoring/inference and `--stage preflight` for GPU debugging. Slurm jobs write a durable receipt, timestamped stdout/stderr logs, and atomic state markers. The submit wrapper checks startup for a bounded interval and reports `STARTED`, `PENDING`, `SUCCEEDED`, `PREEMPTED`, `FAILED`, `RUNNING_STARTUP_UNVERIFIED`, or `UNKNOWN/UNVERIFIED`; it leaves pending jobs in place. Do not run training, model downloads, or dataset preparation directly on a login node.
-
-The allocation preflight requires an H100 with at least 75 GiB reported device memory and BF16 support. GPU visibility on a login node is not accepted as evidence. The initial profile uses four query groups per batch, sequence caps of 192/256, and gradient checkpointing; adjust only after an allocated-node pilot. Training saves atomic `last.pt` and validation-selected `best.pt` checkpoints, writes epoch metrics, and handles `USR1`, `TERM`, and `INT` by finishing the current epoch and checkpointing.
+The default H100 runtime preflight requires CUDA, at least 75 GiB of total device memory, at least 70 GiB free, and BF16 support. Other resource profiles can set different GPU requests and checks. Training writes atomic `last.pt` and validation-selected `best.pt` checkpoints plus per-epoch metrics; it handles `USR1`, `TERM`, and `INT` by finishing the current epoch and checkpointing.
 
 ## Planned ablations
 

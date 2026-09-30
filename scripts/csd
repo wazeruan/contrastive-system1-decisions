@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+COMMAND="run"
+case "${1:-}" in
+  run|status|results|list|help|--help|-h) COMMAND="$1"; shift ;;
+esac
+
+case "$COMMAND" in
+  run) exec "$PROJECT_DIR/scripts/run_pipeline.sh" "$@" ;;
+  status|results|list) exec python3 "$PROJECT_DIR/scripts/project.py" "$COMMAND" --project-dir "$PROJECT_DIR" "$@" ;;
+  --help|-h|help)
+    cat <<'USAGE'
+Usage:
+  scripts/csd run --account ACCOUNT [pipeline options]
+  scripts/csd status [PIPELINE_ID] [--no-refresh]
+  scripts/csd results [PIPELINE_ID] [--no-refresh]
+  scripts/csd list
+
+Run submits the baseline chain. Status reconciles its jobs with Slurm and receipts.
+Results summarizes available metrics and writes runs/pipelines/<id>/RESULTS.md.
+USAGE
+    ;;
+  *) echo "csd: unknown command '$COMMAND' (use run, status, results, list, or help)" >&2; exit 2 ;;
+esac
