@@ -45,7 +45,7 @@ class TinyEncoder(nn.Module):
 class ModelDtypeTests(unittest.TestCase):
     def test_half_hidden_states_work_with_fp32_and_half_projection_weights(self) -> None:
         tokenizer = TinyTokenizer()
-        for architecture in model.ARCHITECTURES:
+        for architecture in model.DUAL_ARCHITECTURES:
             for hidden_dtype in (torch.float16, torch.bfloat16):
                 for projection_dtype in (torch.float32, torch.float16):
                     with self.subTest(

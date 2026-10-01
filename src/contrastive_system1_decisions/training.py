@@ -17,7 +17,8 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from .data import DecisionExample, read_jsonl
-from .model import DualEncoderScorer, forward_precision, load_tokenizer, bf16_autocast_enabled
+from .optimizers import HybridOptimizer, build_optimizer
+from .model import build_model, CrossEncoderScorer, DualEncoderScorer, forward_precision, load_tokenizer, bf16_autocast_enabled
 from .runtime import preflight_gpu, write_started_marker
 
 
@@ -169,12 +170,12 @@ def _loss_and_metrics(
 
 
 def _run_epoch(
-    model: DualEncoderScorer,
+    model: DualEncoderScorer | CrossEncoderScorer,
     loader: DataLoader,
     tokenizer: Any,
     device: torch.device,
     config: dict[str, Any],
-    optimizer: torch.optim.Optimizer | None,
+    optimizer: torch.optim.Optimizer | HybridOptimizer | None,
 ) -> dict[str, float]:
     training = optimizer is not None
     precision = forward_precision(config, device)
@@ -224,9 +225,9 @@ def _run_epoch(
 
 
 def _save_checkpoint(
-    model: DualEncoderScorer,
+    model: DualEncoderScorer | CrossEncoderScorer,
     tokenizer: Any,
-    optimizer: torch.optim.Optimizer,
+    optimizer: torch.optim.Optimizer | HybridOptimizer,
     config: dict[str, Any],
     epoch: int,
     global_step: int,
@@ -280,22 +281,14 @@ def train(config_path: str | Path, data_dir: str | Path, run_dir: str | Path, re
     print(f"Forward precision: {precision}", flush=True)
 
     tokenizer = load_tokenizer(config["model_name"], config.get("model_revision"))
-    model = DualEncoderScorer(
-        model_name=config["model_name"],
-        architecture=config["architecture"],
-        projection_dim=int(config["projection_dim"]),
-        revision=config.get("model_revision"),
-        tau=float(config["tau"]),
-    ).to(device)
+    model = build_model(config).to(device)
     if bool(config.get("gradient_checkpointing", False)):
         encoders = {id(model.query_encoder): model.query_encoder, id(model.action_encoder): model.action_encoder}
         for encoder in encoders.values():
             encoder.gradient_checkpointing_enable()
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(config["learning_rate"]),
-        weight_decay=float(config["weight_decay"]),
-    )
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters())}; "
+          f"trainable: {sum(p.numel() for p in model.parameters() if p.requires_grad)}", flush=True)
+    optimizer = build_optimizer(model, config)
     first_epoch = 0
     global_step = 0
     best_validation_nll = float("inf")
@@ -378,7 +371,7 @@ def _preflight_h100(min_memory_gib: float = 75.0) -> dict[str, Any]:
     return preflight_gpu(require_h100=True, min_memory_gib=min_memory_gib)
 
 
-def _write_started_marker(path: Path, run_dir: Path, model: DualEncoderScorer,
+def _write_started_marker(path: Path, run_dir: Path, model: DualEncoderScorer | CrossEncoderScorer,
                           require_h100: bool = True,
                           gpu_profile: str | Path | None = None,
                           gpu_profile_sha256: str | None = None,

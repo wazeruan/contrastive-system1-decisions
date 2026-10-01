@@ -105,3 +105,30 @@ Configs are checked in for seeds 42, 43, and 44 for each architecture. The submi
 ## Recorded baseline results
 
 The completed FP32 shared-backbone run reported **98.33% xLAM test tool-selection accuracy** and **72.05% on the BFCL live_multiple tool-selection slice**. See the [experiment report](reports/2026-09-30-shared-heads-h100.md) and [full-precision metrics](reports/2026-09-30-shared-heads-h100.json) for provenance, calibration, and limitations. These are custom tool-selection results, not official BFCL leaderboard scores.
+
+## Cross-encoder with Muon
+
+`configs/cross-encoder-muon-h100.json` jointly encodes `[CLS] query [SEP] tool schema [SEP]` with one FP32 DeBERTa-v3-base, then applies a 768 → 1 CLS scoring head. Candidate-set cross-entropy trains raw scalar logits; dual-encoder `tau` and `projection_dim` fields are retained for config compatibility but unused by the cross-encoder. Temperature calibration and both existing evaluation slices use the architecture stored in the checkpoint.
+
+Muon updates non-embedding 2D hidden matrices. AdamW updates embeddings, biases, normalization parameters and the scoring head, following [PyTorch's Muon parameter guidance](https://docs.pytorch.org/docs/stable/generated/torch.optim.Muon.html). Muon uses LR 0.0002, momentum 0.95, five Newton–Schulz iterations and `match_rms_adamw` LR adjustment; auxiliary AdamW uses LR 0.00002. These are initial experiment settings, not tuned optima. Both optimizer states and parameter assignments are checkpointed. The environment must expose `torch.optim.Muon`; the current lockfile resolves PyTorch 2.14. `configs/cross-encoder-adamw-h100.json` provides a matched architecture control to separate optimizer effects from architecture effects.
+
+Pairs use `longest_first` truncation at 448 total tokens including special tokens; the dual encoder's per-side length limits do not apply. Each forward handles up to eight pairs. Chunking limits individual forwards but retains their training graphs until backward; keep gradient checkpointing enabled and reduce query-group batch size if needed. Tools cannot be independently cached for cross-encoder scoring. Training prints exact unique and trainable parameter counts.
+
+Start a new full pipeline (existing runs are preserved; defaults remain H100 ×1 and 128G host RAM):
+
+```bash
+./scripts/csd run --account def-denilson --config configs/cross-encoder-muon-h100.json
+```
+
+Reuse the completed data while refreshing setup, model preparation and preflight:
+
+```bash
+./scripts/csd run --account def-denilson \
+  --config configs/cross-encoder-muon-h100.json \
+  --continue-after-xlam \
+  --setup-job-id 22971759 \
+  --xlam-job-id 22971774 --xlam-dir data/processed/xlam-001 \
+  --bfcl-job-id 22972201 --bfcl-dir data/benchmark/bfcl-003
+```
+
+The reuse command verifies accounting and artifacts; job IDs and paths are specific to the completed Nibi experiment. Supply credentials through the launcher's supported environment mechanism when needed. This architecture/optimizer has not yet been validated on an allocated H100; use `csd status` and `csd results` to verify execution and finite metrics.

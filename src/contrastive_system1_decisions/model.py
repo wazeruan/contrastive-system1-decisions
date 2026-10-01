@@ -1,4 +1,4 @@
-"""Dual-encoder scoring models with controlled parameter sharing."""
+"""Dual-encoder and paired cross-encoder candidate scoring models."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from torch.nn import functional as F
 from transformers import AutoModel, AutoTokenizer
 
 
-ARCHITECTURES = ("shared_tied", "shared_heads", "separate")
+DUAL_ARCHITECTURES = ("shared_tied", "shared_heads", "separate")
+ARCHITECTURES = (*DUAL_ARCHITECTURES, "cross_encoder")
 
 
 def bf16_autocast_enabled(config: dict[str, object], device: torch.device) -> bool:
@@ -62,8 +63,8 @@ class DualEncoderScorer(nn.Module):
         tau: float = 0.07,
     ) -> None:
         super().__init__()
-        if architecture not in ARCHITECTURES:
-            raise ValueError(f"architecture must be one of {ARCHITECTURES}")
+        if architecture not in DUAL_ARCHITECTURES:
+            raise ValueError(f"dual architecture must be one of {DUAL_ARCHITECTURES}")
         if projection_dim < 1 or tau <= 0:
             raise ValueError("projection_dim and tau must be positive")
         self.model_name = model_name
@@ -145,6 +146,88 @@ class DualEncoderScorer(nn.Module):
             (action_vectors[start:end] @ query_vectors[row]) / self.tau
             for row, (start, end) in enumerate(zip(offsets[:-1], offsets[1:]))
         ]
+
+
+class CrossEncoderScorer(nn.Module):
+    """Jointly encode each query/candidate pair and score its CLS vector."""
+
+    def __init__(
+        self,
+        model_name: str,
+        revision: str | None = None,
+        max_pair_length: int = 448,
+        pair_batch_size: int = 8,
+    ) -> None:
+        super().__init__()
+        if max_pair_length < 3 or pair_batch_size < 1:
+            raise ValueError("max_pair_length must be at least 3 and pair_batch_size positive")
+        self.model_name = model_name
+        self.revision = revision
+        self.architecture = "cross_encoder"
+        self.max_pair_length = max_pair_length
+        self.pair_batch_size = pair_batch_size
+        verify_prepared_model(model_name, revision)
+        self.query_encoder = AutoModel.from_pretrained(
+            model_name, revision=revision, torch_dtype=torch.float32
+        )
+        self.scoring_head = nn.Linear(int(self.query_encoder.config.hidden_size), 1)
+
+    @property
+    def action_encoder(self) -> nn.Module:
+        # Preserve the common training interface without registering a second backbone.
+        return self.query_encoder
+
+    def score_groups(
+        self,
+        query_texts: Sequence[str],
+        candidate_texts: Sequence[Sequence[str]],
+        tokenizer: AutoTokenizer,
+        max_query_length: int,
+        max_action_length: int,
+        device: torch.device,
+    ) -> list[torch.Tensor]:
+        if len(query_texts) != len(candidate_texts):
+            raise ValueError("query and candidate batch sizes differ")
+        if any(not candidates for candidates in candidate_texts):
+            raise ValueError("each query requires at least one candidate")
+        counts = [len(group) for group in candidate_texts]
+        pairs = [(query, action) for query, group in zip(query_texts, candidate_texts) for action in group]
+        if not pairs:
+            return []
+        chunks = []
+        for start in range(0, len(pairs), self.pair_batch_size):
+            chunk = pairs[start:start + self.pair_batch_size]
+            # The tokenizer inserts architecture-specific CLS/SEP tokens and masks.
+            tokens = tokenizer(
+                [query for query, _ in chunk],
+                text_pair=[action for _, action in chunk],
+                padding=True,
+                truncation="longest_first",
+                max_length=self.max_pair_length,
+                return_tensors="pt",
+            )
+            tokens = {name: value.to(device) for name, value in tokens.items()}
+            hidden = self.query_encoder(**tokens).last_hidden_state[:, 0, :]
+            chunks.append(self.scoring_head(hidden.to(self.scoring_head.weight.dtype)).squeeze(-1).float())
+        scores = torch.cat(chunks)
+        return list(scores.split(counts))
+
+
+def build_model(config: dict[str, object]) -> DualEncoderScorer | CrossEncoderScorer:
+    """Build the checkpoint-compatible scorer selected by the configuration."""
+    common = {"model_name": config["model_name"], "revision": config.get("model_revision")}
+    if config.get("architecture", "shared_heads") == "cross_encoder":
+        return CrossEncoderScorer(
+            **common,
+            max_pair_length=int(config.get("max_pair_length", 448)),
+            pair_batch_size=int(config.get("pair_batch_size", 8)),
+        )
+    return DualEncoderScorer(
+        **common,
+        architecture=str(config.get("architecture", "shared_heads")),
+        projection_dim=int(config.get("projection_dim", 256)),
+        tau=float(config.get("tau", 0.07)),
+    )
 
 
 def load_tokenizer(model_name: str, revision: str | None = None) -> AutoTokenizer:

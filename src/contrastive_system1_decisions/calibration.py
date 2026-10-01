@@ -11,20 +11,14 @@ import torch
 from torch.nn import functional as F
 
 from .data import DecisionExample, read_jsonl
-from .model import DualEncoderScorer, bf16_autocast_enabled, forward_precision, load_tokenizer
+from .model import build_model, CrossEncoderScorer, DualEncoderScorer, bf16_autocast_enabled, forward_precision, load_tokenizer
 from .runtime import preflight_gpu, write_started_marker
 
 
-def load_model(checkpoint_path: str | Path, device: torch.device) -> tuple[DualEncoderScorer, Any, dict[str, Any]]:
+def load_model(checkpoint_path: str | Path, device: torch.device) -> tuple[DualEncoderScorer | CrossEncoderScorer, Any, dict[str, Any]]:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     config = payload["config"]
-    model = DualEncoderScorer(
-        model_name=config["model_name"],
-        architecture=config["architecture"],
-        projection_dim=int(config["projection_dim"]),
-        revision=config.get("model_revision"),
-        tau=float(config["tau"]),
-    )
+    model = build_model(config)
     model.load_state_dict(payload["state_dict"])
     model.to(device).eval()
     tokenizer = load_tokenizer(config["model_name"], config.get("model_revision"))
@@ -33,7 +27,7 @@ def load_model(checkpoint_path: str | Path, device: torch.device) -> tuple[DualE
 
 @torch.no_grad()
 def collect_logits(
-    model: DualEncoderScorer,
+    model: DualEncoderScorer | CrossEncoderScorer,
     tokenizer: Any,
     examples: list[DecisionExample],
     config: dict[str, Any],

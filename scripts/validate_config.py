@@ -28,7 +28,7 @@ def validate(path: Path) -> None:
         raise ValueError("model_name must be a nonempty string")
     if not re.fullmatch(r"[0-9a-f]{40}", str(config["model_revision"])):
         raise ValueError("model_revision must be a full 40-character commit SHA")
-    if config["architecture"] not in {"shared_tied", "shared_heads", "separate"}:
+    if config["architecture"] not in {"shared_tied", "shared_heads", "separate", "cross_encoder"}:
         raise ValueError("unsupported architecture")
 
     for key in ("projection_dim", "epochs", "early_stopping_patience", "batch_size",
@@ -46,6 +46,21 @@ def validate(path: Path) -> None:
             raise ValueError(f"{key} must be a finite number")
         if value < 0 or (not allow_zero and value == 0):
             raise ValueError(f"{key} must be {'nonnegative' if allow_zero else 'positive'}")
+
+    if config.get("optimizer", "adamw") not in {"adamw", "muon"}:
+        raise ValueError("optimizer must be adamw or muon")
+    for key in ("max_pair_length", "pair_batch_size", "muon_ns_steps"):
+        if key in config and (type(config[key]) is not int or config[key] < 1):
+            raise ValueError(f"{key} must be a positive integer")
+    if config.get("max_pair_length", 448) < 3:
+        raise ValueError("max_pair_length must be at least 3")
+    for key in ("muon_learning_rate", "muon_momentum"):
+        if key in config:
+            value = config[key]
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{key} must be finite and positive")
+    if "muon_momentum" in config and config["muon_momentum"] >= 1:
+        raise ValueError("muon_momentum must be less than one")
 
     for key in ("gradient_checkpointing", "require_h100", "use_bf16"):
         if not isinstance(config[key], bool):
