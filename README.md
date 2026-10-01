@@ -101,3 +101,7 @@ Configs are checked in for seeds 42, 43, and 44 for each architecture. The submi
 - BFCL: [Berkeley Function Calling Leaderboard data and category definitions](https://github.com/EnlightenedAI/BFCL/blob/main/berkeley-function-call-leaderboard/bfcl_eval/data/README.md).
 - Encoder: [microsoft/deberta-v3-base](https://huggingface.co/microsoft/deberta-v3-base).
 - Calibration: Guo et al., [On Calibration of Modern Neural Networks](https://proceedings.mlr.press/v70/guo17a.html).
+
+## Recorded baseline results
+
+The completed FP32 shared-backbone run reported **98.33% xLAM test tool-selection accuracy** and **72.05% on the BFCL live_multiple tool-selection slice**. See the [experiment report](reports/2026-09-30-shared-heads-h100.md) and [full-precision metrics](reports/2026-09-30-shared-heads-h100.json) for provenance, calibration, and limitations. These are custom tool-selection results, not official BFCL leaderboard scores.

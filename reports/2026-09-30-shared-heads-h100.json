@@ -1,0 +1,43 @@
+{
+  "pipeline_id": "20260930T193456Z-c784dfbd",
+  "pipeline_created_at_utc": "2026-09-30T19:34:56Z",
+  "reported_state": "SUCCEEDED",
+  "provenance": "User-provided csd status/results output; remote artifacts were not independently downloaded or inspected.",
+  "training_code_commit": "1c5e291",
+  "config": "configs/shared-heads-h100.json",
+  "config_sha256": "604608aa57032a08f4f9c4e723b5719133d575c4fb5eb3e5349cf8457ca4c721",
+  "hardware": "Nibi H100 80GB",
+  "host_memory_request": "128G per stage",
+  "precision": "FP32",
+  "training": {
+    "epochs": 5,
+    "global_step": 24020,
+    "best_validation_nll": 0.07362169093509982,
+    "last_validation_accuracy": 0.9809128630705394
+  },
+  "calibration": {
+    "examples": 1269,
+    "temperature": 1.8731975555419922,
+    "nll_before": 0.1301376223564148,
+    "nll_after": 0.09683699160814285
+  },
+  "evaluation": {
+    "xlam": {
+      "examples": 2451,
+      "top1_tool_accuracy": 0.9832721338229294,
+      "mrr": 0.9912620699034407,
+      "nll": 0.0718015032246452,
+      "brier": 0.0324062891761462,
+      "ece_15_bins": 0.013286975769060898
+    },
+    "bfcl_live_multiple": {
+      "examples": 1052,
+      "top1_tool_accuracy": 0.720532319391635,
+      "mrr": 0.8415436960589052,
+      "nll": 0.745592620930406,
+      "brier": 0.38972499582909614,
+      "ece_15_bins": 0.06517840707993322
+    }
+  },
+  "metric_scope": "Custom candidate tool selection only; no argument generation, execution, or official BFCL leaderboard equivalence."
+}
