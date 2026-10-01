@@ -132,3 +132,35 @@ Reuse the completed data while refreshing setup, model preparation and preflight
 ```
 
 The reuse command verifies accounting and artifacts; job IDs and paths are specific to the completed Nibi experiment. Supply credentials through the launcher's supported environment mechanism when needed. This architecture/optimizer has not yet been validated on an allocated H100; use `csd status` and `csd results` to verify execution and finite metrics.
+
+## External evaluation of all three completed models
+
+Two additional sources are adapted to the current single-target selector:
+
+- [ToolACE](https://huggingface.co/datasets/Team-ACE/ToolACE), Apache-2.0: a synthetic corpus used only for external evaluation here. Select the first user/assistant exchange with one distinct explicitly called tool and at least two original candidate schemas.
+- [NVIDIA When2Call](https://huggingface.co/datasets/nvidia/When2Call), CC-BY-4.0: select answerable tool-call cases from the two test files. This is BFCL-derived and is reported as a correlated stress slice, not an independent benchmark. No-tool and clarification cases are excluded because the current models cannot abstain.
+
+Preparation freezes repository revisions, source/output hashes, licenses and filter counts. Exact normalized query overlaps with all xLAM splits are removed, along with duplicate queries within each source. This does not establish absence of near duplicates or pretraining contamination. Original candidate sets are retained; no synthetic distractors or answer text are added to model inputs. These adaptations are custom tool-selection slices, not official dataset benchmark scores.
+
+`configs/external-models.json` selects the completed shared-heads AdamW, cross-encoder Muon/AdamW and cross-encoder AdamW checkpoints and their original xLAM calibration files. Edit the file only if your run paths differ. `configs/external-datasets.json` sets the xLAM data used for overlap exclusion. The launcher snapshots both configurations and verifies checkpoint/calibration files before submitting CPU preparation followed by one H100 evaluation job. It uses the existing receipt and dependency infrastructure, with 128G host RAM by default.
+
+```bash
+git pull --ff-only
+./scripts/evaluate_external.sh --account def-denilson
+./scripts/evaluate_external.sh status
+./scripts/evaluate_external.sh results
+```
+
+All three models score the same frozen examples, and external labels are never used for calibration fitting. Outputs include accuracy, MRR, NLL, Brier, ECE, candidate-count strata, per-example predictions, paired discordant counts and a Markdown comparison. Timing includes tokenization and forward scoring and is exploratory; no warmed or randomized-order latency benchmark is claimed. Each source is reported separately.
+
+Only scripts and synthetic checks have been prepared locally. Real dataset counts, metrics, and H100 execution become available after the submitted jobs finish successfully. Do not infer completion from submission acceptance or partial result files. Status prints durable receipt/accounting evidence; a failed or ambiguous launch must be inspected before retrying.
+
+To inspect an older external suite, add `--suite /absolute/path/to/suite` to `status` or `results`. If CPU preparation succeeded but evaluation submission stopped, reuse its frozen data explicitly:
+
+```bash
+./scripts/evaluate_external.sh --account def-denilson \
+  --reuse-data-dir /absolute/path/to/completed/suite/data \
+  --prepare-job-id PREPARE_JOB_ID
+```
+
+Recovery requires the matching successful preparation receipt and `sacct COMPLETED|0:0`; evaluation checks the frozen hashes again inside its allocation. Recovery also checks prior evaluations using the same prepared directory and rejects active, successful, or unverifiable duplicates; a new comparison is allowed only after a verified terminal failure. No automatic scientific-workload retry occurs.

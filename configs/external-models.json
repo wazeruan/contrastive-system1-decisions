@@ -1,0 +1,7 @@
+{
+  "models": [
+    {"name": "shared-heads-adamw", "checkpoint": "runs/shared-heads-h100-seed42-004/checkpoints/best.pt", "calibration": "runs/calibration-003/calibration.json"},
+    {"name": "cross-encoder-muon", "checkpoint": "runs/cross-encoder-muon-h100-seed42/checkpoints/best.pt", "calibration": "runs/calibration-004/calibration.json"},
+    {"name": "cross-encoder-adamw", "checkpoint": "runs/cross-encoder-adamw-h100-seed42/checkpoints/best.pt", "calibration": "runs/calibration-005/calibration.json"}
+  ]
+}

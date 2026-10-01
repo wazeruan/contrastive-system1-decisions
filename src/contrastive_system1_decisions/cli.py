@@ -99,6 +99,19 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--gpu-profile", type=Path)
     benchmark.add_argument("--gpu-profile-sha256")
 
+    external_prepare = commands.add_parser("external-prepare", help="freeze external selector datasets")
+    external_prepare.add_argument("--config", type=Path, required=True)
+    external_prepare.add_argument("--output-dir", type=Path, required=True)
+    external_prepare.add_argument("--started-marker", type=Path)
+    external_evaluate = commands.add_parser("external-evaluate", help="compare all checkpoints on frozen external data")
+    external_evaluate.add_argument("--models", type=Path, required=True)
+    external_evaluate.add_argument("--data-dir", type=Path, required=True)
+    external_evaluate.add_argument("--output-dir", type=Path, required=True)
+    external_evaluate.add_argument("--batch-size", type=int, default=4)
+    external_evaluate.add_argument("--started-marker", type=Path)
+    external_evaluate.add_argument("--gpu-profile", type=Path)
+    external_evaluate.add_argument("--gpu-profile-sha256")
+
     preflight = commands.add_parser("preflight", help="check the allocated accelerator")
     preflight.add_argument("--require-h100", action="store_true")
     preflight.add_argument("--min-memory-gib", type=float, default=75.0)
@@ -145,6 +158,15 @@ def main() -> None:
             args.checkpoint, args.data_dir, args.category, args.output, args.calibration, args.batch_size,
             args.started_marker, args.require_h100, args.gpu_profile, args.gpu_profile_sha256
         )
+    elif args.command == "external-prepare":
+        from .external_data import prepare_external
+        if args.started_marker:
+            write_started_marker(args.started_marker, args.output_dir, "external-prepare")
+        result = prepare_external(args.output_dir, args.config)
+    elif args.command == "external-evaluate":
+        from .external_evaluation import evaluate_external
+        result = evaluate_external(args.models, args.data_dir, args.output_dir, args.batch_size,
+                                   args.started_marker, args.gpu_profile, args.gpu_profile_sha256)
     elif args.command == "preflight":
         result = _preflight(args.require_h100, args.min_memory_gib, args.gpu_profile,
                             args.gpu_profile_sha256)

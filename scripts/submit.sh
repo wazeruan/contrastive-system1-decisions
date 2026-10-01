@@ -12,7 +12,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/submit.sh --stage STAGE --account ACCOUNT [options]
 
-Stages: setup, prepare-xlam, prepare-bfcl, prepare-model, preflight, train, calibrate, evaluate, benchmark
+Stages: setup, prepare-xlam, prepare-bfcl, prepare-model, preflight, train, calibrate, evaluate, benchmark, external-prepare, external-evaluate
 
 Common: --project-dir PATH --env-script PATH --partition NAME --resource-profile PATH
         --gpu-resource SPEC (legacy --gres override)
@@ -100,6 +100,18 @@ case "$STAGE" in
     [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "prepare-bfcl is a CPU stage and cannot resume"
     CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-01:00:00}"
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/data/benchmark/bfcl" ;;
+  external-prepare)
+    [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "external-prepare is a CPU stage and cannot resume"
+    [[ -n "$CONFIG" && -f "$CONFIG" ]] || die "external-prepare requires suite --config"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-02:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/data/benchmark/external" ;;
+  external-evaluate)
+    GPU_COUNT=1
+    [[ "$RESUME" == 0 ]] || die "external-evaluate cannot resume in place"
+    [[ -n "$CONFIG" && -f "$CONFIG" ]] || die "external-evaluate requires suite --config"
+    [[ -n "$DATA_DIR" && ( -d "$DATA_DIR" || -n "$DEPENDENCY" ) ]] || die "external-evaluate requires --data-dir"
+    CPUS="${CPUS:-4}"; MEMORY="${MEMORY:-128G}"; WALL_TIME="${WALL_TIME:-12:00:00}"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$PROJECT_DIR/runs/external-evaluation" ;;
   prepare-model)
     [[ -z "$GPU_RESOURCE" && "$RESUME" == 0 ]] || die "prepare-model is a CPU stage and cannot resume"
     [[ -n "$CONFIG" && -f "$CONFIG" ]] || die "prepare-model needs an existing --config"
@@ -235,7 +247,7 @@ if [[ -n "$ENV_SCRIPT" ]]; then command -v uv >/dev/null 2>&1 || die "uv is unav
 if [[ "$STAGE" == train || "$STAGE" == prepare-model ]]; then
   python3 "$PROJECT_DIR/scripts/validate_config.py" "$CONFIG" || die "training config validation failed"
 fi
-if [[ "$STAGE" == train || "$STAGE" == calibrate || "$STAGE" == evaluate || "$STAGE" == benchmark ]]; then
+if [[ "$STAGE" == train || "$STAGE" == calibrate || "$STAGE" == evaluate || "$STAGE" == benchmark || "$STAGE" == external-evaluate ]]; then
   [[ -f "$MODEL_MANIFEST" || -n "$DEPENDENCY" ]] || die "pinned model cache is missing; run prepare-model or pass its job ID with --dependency"
   # A dependent prepare-model stage may replace a stale manifest before train starts.
   if [[ "$STAGE" == train && -f "$MODEL_MANIFEST" && -z "$DEPENDENCY" ]]; then
@@ -320,6 +332,8 @@ case "$STAGE" in
   train) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/train.sbatch" ;;
   calibrate) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/calibrate.sbatch" ;;
   evaluate) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/evaluate.sbatch" ;;
+  external-prepare) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/external-prepare.sbatch" ;;
+  external-evaluate) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/external-evaluate.sbatch" ;;
   benchmark) SBATCH_SCRIPT="$PROJECT_DIR/scripts/slurm/benchmark.sbatch" ;;
 esac
 [[ -f "$SBATCH_SCRIPT" ]] || die "missing Slurm entry point: $SBATCH_SCRIPT"
@@ -446,6 +460,8 @@ case "$STAGE" in
   train) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CONFIG" "$DATA_DIR" "$RESUME" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
   calibrate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
   evaluate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_PATH" "$CALIBRATION" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
+  external-prepare) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CONFIG") ;;
+  external-evaluate) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CONFIG" "$DATA_DIR" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
   benchmark) stage_args=("$PROJECT_DIR" "$RECEIPT" "$TOKEN" "$RUN_DIR" "$CHECKPOINT" "$DATA_DIR" "$CATEGORY" "$CALIBRATION" "$RESOURCE_PROFILE" "$GPU_PROFILE_SHA256") ;;
 esac
 

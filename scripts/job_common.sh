@@ -34,7 +34,7 @@ job_initialize() {
   [[ "$CSD_MODEL_CACHE_MANIFEST" == /* ]] || CSD_MODEL_CACHE_MANIFEST="$PROJECT_PATH/$CSD_MODEL_CACHE_MANIFEST"
   export CSD_MODEL_CACHE_MANIFEST
   case "$APP_STAGE" in
-    train|calibrate|evaluate|evaluate-bfcl)
+    train|calibrate|evaluate|evaluate-bfcl|external-evaluate)
       export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
       ;;
   esac

@@ -77,6 +77,8 @@ class CrossMuonTests(unittest.TestCase):
         validation = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(validation)
         for path in (root / "configs").glob("*.json"):
+            if path.name.startswith("external-"):
+                continue  # Evaluation manifests are not training configurations.
             validation.validate(path)
         base = json.loads((root / "configs/shared-heads-h100.json").read_text())
         invalid = {"optimizer": "sgd", "muon_learning_rate": float("nan"),
