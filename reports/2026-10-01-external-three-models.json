@@ -1,0 +1,889 @@
+{
+  "state": "SUCCEEDED",
+  "dataset_manifest_sha256": "4e4e0fae79637ed09e59409b05b9583ff3ae94afd79e662521fa054774364a5b",
+  "models": [
+    {
+      "name": "shared-heads-adamw",
+      "checkpoint": "/scratch/weici/contrastive-system1-decisions/runs/shared-heads-h100-seed42-004/checkpoints/best.pt",
+      "calibration": "/scratch/weici/contrastive-system1-decisions/runs/calibration-003/calibration.json",
+      "forward_precision": "FP32",
+      "datasets": [
+        {
+          "examples": 1021,
+          "top1_tool_accuracy": 0.7257590597453477,
+          "mrr": 0.8448781928703575,
+          "nll": 0.7381549064416579,
+          "brier": 0.3879146462068874,
+          "ece_15_bins": 0.07162566537021077,
+          "mean_candidate_count": 3.969637610186092,
+          "temperature": 1.8731975555419922,
+          "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence",
+          "candidate_count_strata": {
+            "2": {
+              "examples": 216,
+              "top1_tool_accuracy": 0.8472222222222222,
+              "mrr": 0.9236111111111112,
+              "nll": 0.3755962368004265,
+              "brier": 0.23078579191806917,
+              "ece_15_bins": 0.07165969025205678,
+              "mean_candidate_count": 2.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "3": {
+              "examples": 291,
+              "top1_tool_accuracy": 0.7766323024054983,
+              "mrr": 0.8774341351660939,
+              "nll": 0.5980426275602996,
+              "brier": 0.32975025266643365,
+              "ece_15_bins": 0.08277260069175274,
+              "mean_candidate_count": 3.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "4": {
+              "examples": 175,
+              "top1_tool_accuracy": 0.6971428571428572,
+              "mrr": 0.8376190476190475,
+              "nll": 0.7429423774742255,
+              "brier": 0.4305373469122359,
+              "ece_15_bins": 0.121719674042293,
+              "mean_candidate_count": 4.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "5": {
+              "examples": 189,
+              "top1_tool_accuracy": 0.5978835978835979,
+              "mrr": 0.7633156966490299,
+              "nll": 1.1190477414497066,
+              "brier": 0.5474957455681603,
+              "ece_15_bins": 0.12993802469243448,
+              "mean_candidate_count": 5.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "6": {
+              "examples": 78,
+              "top1_tool_accuracy": 0.6025641025641025,
+              "mrr": 0.7555555555555556,
+              "nll": 1.0201830045343974,
+              "brier": 0.49107179965880604,
+              "ece_15_bins": 0.16315424709748,
+              "mean_candidate_count": 6.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "7": {
+              "examples": 27,
+              "top1_tool_accuracy": 0.7777777777777778,
+              "mrr": 0.882716049382716,
+              "nll": 0.6310383160771044,
+              "brier": 0.3358937532951434,
+              "ece_15_bins": 0.1522518992424011,
+              "mean_candidate_count": 7.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "8": {
+              "examples": 18,
+              "top1_tool_accuracy": 0.6111111111111112,
+              "mrr": 0.720899470899471,
+              "nll": 1.4095134991738532,
+              "brier": 0.5606891199325522,
+              "ece_15_bins": 0.1948612017763985,
+              "mean_candidate_count": 8.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "9": {
+              "examples": 11,
+              "top1_tool_accuracy": 0.6363636363636364,
+              "mrr": 0.7525252525252526,
+              "nll": 1.9471392726356334,
+              "brier": 0.6786612048745155,
+              "ece_15_bins": 0.27267922054637567,
+              "mean_candidate_count": 9.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "10": {
+              "examples": 14,
+              "top1_tool_accuracy": 0.7142857142857143,
+              "mrr": 0.8273809523809524,
+              "nll": 0.7271372103797538,
+              "brier": 0.359696530416321,
+              "ece_15_bins": 0.18713069600718363,
+              "mean_candidate_count": 10.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "26": {
+              "examples": 1,
+              "top1_tool_accuracy": 1.0,
+              "mrr": 1.0,
+              "nll": 1.277846097946167,
+              "brier": 0.6267620325088501,
+              "ece_15_bins": 0.7213631868362427,
+              "mean_candidate_count": 26.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "37": {
+              "examples": 1,
+              "top1_tool_accuracy": 0.0,
+              "mrr": 0.3333333333333333,
+              "nll": 2.1221776008605957,
+              "brier": 0.8401449918746948,
+              "ece_15_bins": 0.14464908838272095,
+              "mean_candidate_count": 37.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            }
+          },
+          "dataset": "when2call",
+          "data_sha256": "f43b42fb3255ef601ca94d9f2da37f6b61ebac7ea65b1e00f785e09e87d9100c",
+          "elapsed_seconds": 17.928403936792165,
+          "examples_per_second": 56.94873919617198,
+          "timing_scope": "tokenization plus forward scoring; excludes checkpoint loading; sequential run order"
+        },
+        {
+          "examples": 4758,
+          "top1_tool_accuracy": 0.7950819672131147,
+          "mrr": 0.8856737524770311,
+          "nll": 0.5594495903683985,
+          "brier": 0.2955587126210303,
+          "ece_15_bins": 0.033355906317593824,
+          "mean_candidate_count": 4.003572929802438,
+          "temperature": 1.8731975555419922,
+          "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence",
+          "candidate_count_strata": {
+            "2": {
+              "examples": 752,
+              "top1_tool_accuracy": 0.7207446808510638,
+              "mrr": 0.8603723404255319,
+              "nll": 0.5811764836873379,
+              "brier": 0.381452420219247,
+              "ece_15_bins": 0.0853148227993478,
+              "mean_candidate_count": 2.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "3": {
+              "examples": 1161,
+              "top1_tool_accuracy": 0.8268733850129198,
+              "mrr": 0.9062589721504449,
+              "nll": 0.46282270775232187,
+              "brier": 0.24848230634452212,
+              "ece_15_bins": 0.03719095070746106,
+              "mean_candidate_count": 3.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "4": {
+              "examples": 1041,
+              "top1_tool_accuracy": 0.8232468780019212,
+              "mrr": 0.9011367275056036,
+              "nll": 0.4826253531785026,
+              "brier": 0.25608744095176433,
+              "ece_15_bins": 0.021759696297641046,
+              "mean_candidate_count": 4.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "5": {
+              "examples": 949,
+              "top1_tool_accuracy": 0.8082191780821918,
+              "mrr": 0.8881629785739374,
+              "nll": 0.5588237894036857,
+              "brier": 0.2797568980156303,
+              "ece_15_bins": 0.03217177757221982,
+              "mean_candidate_count": 5.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "6": {
+              "examples": 837,
+              "top1_tool_accuracy": 0.7837514934289128,
+              "mrr": 0.8706292313819195,
+              "nll": 0.7025996015627667,
+              "brier": 0.3296059696083095,
+              "ece_15_bins": 0.0434600951566206,
+              "mean_candidate_count": 6.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "7": {
+              "examples": 14,
+              "top1_tool_accuracy": 0.0,
+              "mrr": 0.2678571428571429,
+              "nll": 3.5207707711628506,
+              "brier": 1.2972048265593392,
+              "ece_15_bins": 0.5657211350543158,
+              "mean_candidate_count": 7.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "8": {
+              "examples": 3,
+              "top1_tool_accuracy": 0.3333333333333333,
+              "mrr": 0.42857142857142855,
+              "nll": 4.037229696909587,
+              "brier": 1.075802505016327,
+              "ece_15_bins": 0.543942521015803,
+              "mean_candidate_count": 8.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "9": {
+              "examples": 1,
+              "top1_tool_accuracy": 0.0,
+              "mrr": 0.16666666666666666,
+              "nll": 5.264156341552734,
+              "brier": 1.5833830833435059,
+              "ece_15_bins": 0.7501582503318787,
+              "mean_candidate_count": 9.0,
+              "temperature": 1.8731975555419922,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            }
+          },
+          "dataset": "toolace",
+          "data_sha256": "6068fdadc5094a2eae27b3d66eab5ac97226fd1cac6eeac46df9b77e14d425c4",
+          "elapsed_seconds": 52.760910430923104,
+          "examples_per_second": 90.18039986685564,
+          "timing_scope": "tokenization plus forward scoring; excludes checkpoint loading; sequential run order"
+        }
+      ],
+      "architecture": "shared_heads",
+      "optimizer": "adamw",
+      "checkpoint_sha256": "e8332b3b54dedcb9ad4fc32f8c3075de26a81acfabe40deb853021ecb2781609",
+      "calibration_sha256": "f43369f4514431c15aabeadba16bc1f874d4a2d600b8fade92fab20c1d594511"
+    },
+    {
+      "name": "cross-encoder-muon",
+      "checkpoint": "/scratch/weici/contrastive-system1-decisions/runs/cross-encoder-muon-h100-seed42/checkpoints/best.pt",
+      "calibration": "/scratch/weici/contrastive-system1-decisions/runs/calibration-004/calibration.json",
+      "forward_precision": "FP32",
+      "datasets": [
+        {
+          "examples": 1021,
+          "top1_tool_accuracy": 0.8932419196865817,
+          "mrr": 0.941209598432909,
+          "nll": 0.3171930066453654,
+          "brier": 0.16386065294872346,
+          "ece_15_bins": 0.04444648278740317,
+          "mean_candidate_count": 3.969637610186092,
+          "temperature": 2.409261465072632,
+          "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence",
+          "candidate_count_strata": {
+            "2": {
+              "examples": 216,
+              "top1_tool_accuracy": 0.9259259259259259,
+              "mrr": 0.9629629629629629,
+              "nll": 0.2028589329584152,
+              "brier": 0.11221137213859021,
+              "ece_15_bins": 0.03451368350673601,
+              "mean_candidate_count": 2.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "3": {
+              "examples": 291,
+              "top1_tool_accuracy": 0.9072164948453608,
+              "mrr": 0.9518900343642611,
+              "nll": 0.24300359551663245,
+              "brier": 0.13520768650491985,
+              "ece_15_bins": 0.03682842297652334,
+              "mean_candidate_count": 3.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "4": {
+              "examples": 175,
+              "top1_tool_accuracy": 0.88,
+              "mrr": 0.9371428571428572,
+              "nll": 0.32686668343010233,
+              "brier": 0.1681467821871795,
+              "ece_15_bins": 0.052456743035997705,
+              "mean_candidate_count": 4.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "5": {
+              "examples": 189,
+              "top1_tool_accuracy": 0.8624338624338624,
+              "mrr": 0.9214285714285713,
+              "nll": 0.430305590792977,
+              "brier": 0.2179464396894558,
+              "ece_15_bins": 0.10372132733070025,
+              "mean_candidate_count": 5.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "6": {
+              "examples": 78,
+              "top1_tool_accuracy": 0.8717948717948718,
+              "mrr": 0.9230769230769231,
+              "nll": 0.4651689098849228,
+              "brier": 0.2276669751828851,
+              "ece_15_bins": 0.12723181931636274,
+              "mean_candidate_count": 6.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "7": {
+              "examples": 27,
+              "top1_tool_accuracy": 1.0,
+              "mrr": 1.0,
+              "nll": 0.1767956971630661,
+              "brier": 0.07844466858395444,
+              "ece_15_bins": 0.1457692782084147,
+              "mean_candidate_count": 7.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "8": {
+              "examples": 18,
+              "top1_tool_accuracy": 1.0,
+              "mrr": 1.0,
+              "nll": 0.370582420585884,
+              "brier": 0.14057859162696534,
+              "ece_15_bins": 0.29262603984938734,
+              "mean_candidate_count": 8.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "9": {
+              "examples": 11,
+              "top1_tool_accuracy": 0.5454545454545454,
+              "mrr": 0.6931818181818182,
+              "nll": 1.0534117901697755,
+              "brier": 0.49248697588865814,
+              "ece_15_bins": 0.2483062798326666,
+              "mean_candidate_count": 9.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "10": {
+              "examples": 14,
+              "top1_tool_accuracy": 0.7857142857142857,
+              "mrr": 0.8535714285714285,
+              "nll": 0.5855562407689702,
+              "brier": 0.28302461103635324,
+              "ece_15_bins": 0.15073028526135854,
+              "mean_candidate_count": 10.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "26": {
+              "examples": 1,
+              "top1_tool_accuracy": 1.0,
+              "mrr": 1.0,
+              "nll": 0.17322242259979248,
+              "brier": 0.028860630467534065,
+              "ece_15_bins": 0.15904945135116577,
+              "mean_candidate_count": 26.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "37": {
+              "examples": 1,
+              "top1_tool_accuracy": 0.0,
+              "mrr": 0.25,
+              "nll": 3.1073758602142334,
+              "brier": 1.2860628366470337,
+              "ece_15_bins": 0.5981453657150269,
+              "mean_candidate_count": 37.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            }
+          },
+          "dataset": "when2call",
+          "data_sha256": "f43b42fb3255ef601ca94d9f2da37f6b61ebac7ea65b1e00f785e09e87d9100c",
+          "elapsed_seconds": 16.16253536287695,
+          "examples_per_second": 63.1707821252532,
+          "timing_scope": "tokenization plus forward scoring; excludes checkpoint loading; sequential run order"
+        },
+        {
+          "examples": 4758,
+          "top1_tool_accuracy": 0.8980664144598571,
+          "mrr": 0.9445337676895053,
+          "nll": 0.27096539384484347,
+          "brier": 0.14558911430530463,
+          "ece_15_bins": 0.010812558023906491,
+          "mean_candidate_count": 4.003572929802438,
+          "temperature": 2.409261465072632,
+          "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence",
+          "candidate_count_strata": {
+            "2": {
+              "examples": 752,
+              "top1_tool_accuracy": 0.7832446808510638,
+              "mrr": 0.8916223404255319,
+              "nll": 0.4671869030929458,
+              "brier": 0.2921068556637167,
+              "ece_15_bins": 0.07093815101270978,
+              "mean_candidate_count": 2.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "3": {
+              "examples": 1161,
+              "top1_tool_accuracy": 0.9018087855297158,
+              "mrr": 0.9483204134366925,
+              "nll": 0.25705730644249114,
+              "brier": 0.1401589828302721,
+              "ece_15_bins": 0.022721693753990833,
+              "mean_candidate_count": 3.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "4": {
+              "examples": 1041,
+              "top1_tool_accuracy": 0.9346781940441883,
+              "mrr": 0.9620557156580212,
+              "nll": 0.19773190301513283,
+              "brier": 0.09799892064054826,
+              "ece_15_bins": 0.020685714500438223,
+              "mean_candidate_count": 4.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "5": {
+              "examples": 949,
+              "top1_tool_accuracy": 0.9272918861959958,
+              "mrr": 0.9573410607657185,
+              "nll": 0.23043352640694426,
+              "brier": 0.10826730927574524,
+              "ece_15_bins": 0.023984553942062302,
+              "mean_candidate_count": 5.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "6": {
+              "examples": 837,
+              "top1_tool_accuracy": 0.9235364396654719,
+              "mrr": 0.9556551174830744,
+              "nll": 0.21881033936880992,
+              "brier": 0.11010384733657987,
+              "ece_15_bins": 0.026558817928409945,
+              "mean_candidate_count": 6.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "7": {
+              "examples": 14,
+              "top1_tool_accuracy": 0.6428571428571429,
+              "mrr": 0.7404761904761905,
+              "nll": 1.5583281988344555,
+              "brier": 0.6980407360933896,
+              "ece_15_bins": 0.37395791922296795,
+              "mean_candidate_count": 7.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "8": {
+              "examples": 3,
+              "top1_tool_accuracy": 0.6666666666666666,
+              "mrr": 0.7083333333333334,
+              "nll": 1.8537511626879375,
+              "brier": 0.7569522261619568,
+              "ece_15_bins": 0.569411704937617,
+              "mean_candidate_count": 8.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "9": {
+              "examples": 1,
+              "top1_tool_accuracy": 0.0,
+              "mrr": 0.2,
+              "nll": 4.4428300857543945,
+              "brier": 1.3611712455749512,
+              "ece_15_bins": 0.48234835267066956,
+              "mean_candidate_count": 9.0,
+              "temperature": 2.409261465072632,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            }
+          },
+          "dataset": "toolace",
+          "data_sha256": "6068fdadc5094a2eae27b3d66eab5ac97226fd1cac6eeac46df9b77e14d425c4",
+          "elapsed_seconds": 63.335018907207996,
+          "examples_per_second": 75.12431640655126,
+          "timing_scope": "tokenization plus forward scoring; excludes checkpoint loading; sequential run order"
+        }
+      ],
+      "architecture": "cross_encoder",
+      "optimizer": "muon",
+      "checkpoint_sha256": "53cde56b002a787ba8d6b40d0d6a309bce1cb24ed0d23c013d27610d00e46bcb",
+      "calibration_sha256": "c9dd585ed9109afd24b89a82cc8e32d97e04a5be8738cd8217a20032ef921c2d"
+    },
+    {
+      "name": "cross-encoder-adamw",
+      "checkpoint": "/scratch/weici/contrastive-system1-decisions/runs/cross-encoder-adamw-h100-seed42/checkpoints/best.pt",
+      "calibration": "/scratch/weici/contrastive-system1-decisions/runs/calibration-005/calibration.json",
+      "forward_precision": "FP32",
+      "datasets": [
+        {
+          "examples": 1021,
+          "top1_tool_accuracy": 0.9392752203721841,
+          "mrr": 0.9669768201110024,
+          "nll": 0.1831546393344553,
+          "brier": 0.09494074662706162,
+          "ece_15_bins": 0.014332442249770741,
+          "mean_candidate_count": 3.969637610186092,
+          "temperature": 1.8535706996917725,
+          "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence",
+          "candidate_count_strata": {
+            "2": {
+              "examples": 216,
+              "top1_tool_accuracy": 0.9583333333333334,
+              "mrr": 0.9791666666666666,
+              "nll": 0.11885958312605828,
+              "brier": 0.06543561525848711,
+              "ece_15_bins": 0.039600053319224615,
+              "mean_candidate_count": 2.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "3": {
+              "examples": 291,
+              "top1_tool_accuracy": 0.9450171821305842,
+              "mrr": 0.9719358533791524,
+              "nll": 0.1717115679158589,
+              "brier": 0.08623139671350895,
+              "ece_15_bins": 0.025312858553686507,
+              "mean_candidate_count": 3.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "4": {
+              "examples": 175,
+              "top1_tool_accuracy": 0.9257142857142857,
+              "mrr": 0.9609523809523811,
+              "nll": 0.20435253583794674,
+              "brier": 0.11460537292172421,
+              "ece_15_bins": 0.05854645780154635,
+              "mean_candidate_count": 4.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "5": {
+              "examples": 189,
+              "top1_tool_accuracy": 0.9365079365079365,
+              "mrr": 0.9620811287477955,
+              "nll": 0.1930884473947695,
+              "brier": 0.09949245387573807,
+              "ece_15_bins": 0.04112952111890078,
+              "mean_candidate_count": 5.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "6": {
+              "examples": 78,
+              "top1_tool_accuracy": 0.8974358974358975,
+              "mrr": 0.9423076923076923,
+              "nll": 0.3321369555529215,
+              "brier": 0.1593300833666137,
+              "ece_15_bins": 0.07419835222073087,
+              "mean_candidate_count": 6.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "7": {
+              "examples": 27,
+              "top1_tool_accuracy": 1.0,
+              "mrr": 1.0,
+              "nll": 0.029145584073847677,
+              "brier": 0.006909160465015372,
+              "ece_15_bins": 0.027139632790176955,
+              "mean_candidate_count": 7.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "8": {
+              "examples": 18,
+              "top1_tool_accuracy": 1.0,
+              "mrr": 1.0,
+              "nll": 0.05984506393886275,
+              "brier": 0.021784618421987843,
+              "ece_15_bins": 0.045883658859464854,
+              "mean_candidate_count": 8.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "9": {
+              "examples": 11,
+              "top1_tool_accuracy": 0.8181818181818182,
+              "mrr": 0.859090909090909,
+              "nll": 0.5329465488076411,
+              "brier": 0.23471180570952185,
+              "ece_15_bins": 0.11830144307830118,
+              "mean_candidate_count": 9.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "10": {
+              "examples": 14,
+              "top1_tool_accuracy": 0.8571428571428571,
+              "mrr": 0.9285714285714286,
+              "nll": 0.3867117959610726,
+              "brier": 0.23244387474172346,
+              "ece_15_bins": 0.15602510741778786,
+              "mean_candidate_count": 10.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "26": {
+              "examples": 1,
+              "top1_tool_accuracy": 1.0,
+              "mrr": 1.0,
+              "nll": 0.0528186559677124,
+              "brier": 0.0045808712020516396,
+              "ece_15_bins": 0.05144798755645752,
+              "mean_candidate_count": 26.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "37": {
+              "examples": 1,
+              "top1_tool_accuracy": 1.0,
+              "mrr": 1.0,
+              "nll": 0.0037199221551418304,
+              "brier": 1.6975811377051286e-05,
+              "ece_15_bins": 0.0037130117416381836,
+              "mean_candidate_count": 37.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            }
+          },
+          "dataset": "when2call",
+          "data_sha256": "f43b42fb3255ef601ca94d9f2da37f6b61ebac7ea65b1e00f785e09e87d9100c",
+          "elapsed_seconds": 16.095963780768216,
+          "examples_per_second": 63.43205128355915,
+          "timing_scope": "tokenization plus forward scoring; excludes checkpoint loading; sequential run order"
+        },
+        {
+          "examples": 4758,
+          "top1_tool_accuracy": 0.9081546868432114,
+          "mrr": 0.9462279068836446,
+          "nll": 0.2614228379767662,
+          "brier": 0.13203774611341063,
+          "ece_15_bins": 0.02039619390831218,
+          "mean_candidate_count": 4.003572929802438,
+          "temperature": 1.8535706996917725,
+          "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence",
+          "candidate_count_strata": {
+            "2": {
+              "examples": 752,
+              "top1_tool_accuracy": 0.851063829787234,
+              "mrr": 0.925531914893617,
+              "nll": 0.4209792952098794,
+              "brier": 0.2282775839352661,
+              "ece_15_bins": 0.06503662688935061,
+              "mean_candidate_count": 2.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "3": {
+              "examples": 1161,
+              "top1_tool_accuracy": 0.9224806201550387,
+              "mrr": 0.9573643410852714,
+              "nll": 0.21199365444820842,
+              "brier": 0.11242794251895957,
+              "ece_15_bins": 0.020011256677543755,
+              "mean_candidate_count": 3.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "4": {
+              "examples": 1041,
+              "top1_tool_accuracy": 0.9221902017291066,
+              "mrr": 0.9520493115593981,
+              "nll": 0.2092760171163572,
+              "brier": 0.10479667099986056,
+              "ece_15_bins": 0.01778412240268404,
+              "mean_candidate_count": 4.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "5": {
+              "examples": 949,
+              "top1_tool_accuracy": 0.9251844046364595,
+              "mrr": 0.9517211099402881,
+              "nll": 0.2418039086031896,
+              "brier": 0.11316318032911513,
+              "ece_15_bins": 0.025305743714906404,
+              "mean_candidate_count": 5.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "6": {
+              "examples": 837,
+              "top1_tool_accuracy": 0.9139784946236559,
+              "mrr": 0.9437275985663082,
+              "nll": 0.24138396918262686,
+              "brier": 0.11518806542576336,
+              "ece_15_bins": 0.021449595120075642,
+              "mean_candidate_count": 6.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "7": {
+              "examples": 14,
+              "top1_tool_accuracy": 0.35714285714285715,
+              "mrr": 0.5816326530612245,
+              "nll": 1.5720384628844581,
+              "brier": 0.7165306979998556,
+              "ece_15_bins": 0.3169560113123486,
+              "mean_candidate_count": 7.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "8": {
+              "examples": 3,
+              "top1_tool_accuracy": 0.6666666666666666,
+              "mrr": 0.7142857142857143,
+              "nll": 1.496681270500024,
+              "brier": 0.515197948863109,
+              "ece_15_bins": 0.3077734609444936,
+              "mean_candidate_count": 8.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            },
+            "9": {
+              "examples": 1,
+              "top1_tool_accuracy": 0.0,
+              "mrr": 0.2,
+              "nll": 5.283592700958252,
+              "brier": 1.5673846006393433,
+              "ece_15_bins": 0.7270947098731995,
+              "mean_candidate_count": 9.0,
+              "temperature": 1.8535706996917725,
+              "metric_scope": "custom tool-selection slice; does not score generated arguments or claim BFCL leaderboard equivalence"
+            }
+          },
+          "dataset": "toolace",
+          "data_sha256": "6068fdadc5094a2eae27b3d66eab5ac97226fd1cac6eeac46df9b77e14d425c4",
+          "elapsed_seconds": 63.27636600006372,
+          "examples_per_second": 75.19395156155473,
+          "timing_scope": "tokenization plus forward scoring; excludes checkpoint loading; sequential run order"
+        }
+      ],
+      "architecture": "cross_encoder",
+      "optimizer": "adamw",
+      "checkpoint_sha256": "55e04a2c9c7c3d1ccb1d81271f0fc89b521d43a4bfbf7ae92b01709292f0a48f",
+      "calibration_sha256": "99ebf761ec1f976040ff38be894992cdf76a142212f7b7da1fb9f23e0639adc4"
+    }
+  ],
+  "scope": "custom single-target tool selection; no arguments or official leaderboard scores",
+  "calibration": "existing xLAM calibration reused; no external labels used for fitting",
+  "dataset_provenance": [
+    {
+      "name": "when2call",
+      "repository": "nvidia/When2Call",
+      "source_url": "https://huggingface.co/datasets/nvidia/When2Call",
+      "revision": "0582f7749df63a96fdc3070932e83e72396ace53",
+      "source_revision": "0582f7749df63a96fdc3070932e83e72396ace53",
+      "source_filenames": [
+        "test/when2call_test_llm_judge.jsonl",
+        "test/when2call_test_mcq.jsonl"
+      ],
+      "license": "cc-by-4.0",
+      "raw_sha256": {
+        "test/when2call_test_llm_judge.jsonl": "0b710578e3b02479e5acf5688140ec5edf71383fa5c093481c7536b57fd13b25",
+        "test/when2call_test_mcq.jsonl": "8c3694e583eeeb8dbc297e6cd90da70efc68efa4b6adb7227523e828c6b7b14c"
+      },
+      "sha256": "f43b42fb3255ef601ca94d9f2da37f6b61ebac7ea65b1e00f785e09e87d9100c",
+      "source_rows": 3952,
+      "counts": {
+        "not_tool_call": 2557,
+        "kept": 1021,
+        "fewer_than_two_candidates": 277,
+        "duplicate_query_within_dataset": 97
+      },
+      "examples": 1021,
+      "candidate_policy": "original supplied candidates only; no synthetic negatives",
+      "selection": "correct_answer=tool_call in test/llm_judge and test/mcq; normalized-query deduplication across both",
+      "caveat": "BFCL-derived queries; correlated stress evaluation, not independent of BFCL"
+    },
+    {
+      "name": "toolace",
+      "repository": "Team-ACE/ToolACE",
+      "source_url": "https://huggingface.co/datasets/Team-ACE/ToolACE",
+      "revision": "6bda777c88d21e5a204703c1ee45597a8fa4f734",
+      "source_revision": "6bda777c88d21e5a204703c1ee45597a8fa4f734",
+      "source_filenames": [
+        "data.json"
+      ],
+      "license": "apache-2.0",
+      "raw_sha256": {
+        "data.json": "ba12c083fca7e8da48c67ad5b895e495447da7c66e39a2e19742c082e6cb537e"
+      },
+      "sha256": "6068fdadc5094a2eae27b3d66eab5ac97226fd1cac6eeac46df9b77e14d425c4",
+      "source_rows": 11300,
+      "counts": {
+        "kept": 4758,
+        "not_explicit_call": 1603,
+        "bad_call_syntax": 69,
+        "not_single_target": 2055,
+        "missing_tools_marker": 518,
+        "fewer_than_two_candidates": 2264,
+        "duplicate_query_within_dataset": 33
+      },
+      "examples": 4758,
+      "candidate_policy": "original supplied candidates only; no synthetic negatives",
+      "selection": "first user/assistant pair only; one distinct explicit target",
+      "caveat": "synthetic training corpus repurposed as external evaluation; frozen models never trained on this corpus in this project"
+    }
+  ],
+  "paired_comparisons": [
+    {
+      "left": "shared-heads-adamw",
+      "right": "cross-encoder-muon",
+      "dataset": "when2call",
+      "left_only_correct": 51,
+      "right_only_correct": 222,
+      "examples": 1021
+    },
+    {
+      "left": "shared-heads-adamw",
+      "right": "cross-encoder-muon",
+      "dataset": "toolace",
+      "left_only_correct": 239,
+      "right_only_correct": 729,
+      "examples": 4758
+    },
+    {
+      "left": "shared-heads-adamw",
+      "right": "cross-encoder-adamw",
+      "dataset": "when2call",
+      "left_only_correct": 25,
+      "right_only_correct": 243,
+      "examples": 1021
+    },
+    {
+      "left": "shared-heads-adamw",
+      "right": "cross-encoder-adamw",
+      "dataset": "toolace",
+      "left_only_correct": 215,
+      "right_only_correct": 753,
+      "examples": 4758
+    },
+    {
+      "left": "cross-encoder-muon",
+      "right": "cross-encoder-adamw",
+      "dataset": "when2call",
+      "left_only_correct": 20,
+      "right_only_correct": 67,
+      "examples": 1021
+    },
+    {
+      "left": "cross-encoder-muon",
+      "right": "cross-encoder-adamw",
+      "dataset": "toolace",
+      "left_only_correct": 198,
+      "right_only_correct": 246,
+      "examples": 4758
+    }
+  ],
+  "provenance": "User-provided external evaluation results JSON; remote artifacts not independently downloaded or inspected."
+}

@@ -1,0 +1,134 @@
+{
+  "provenance": "User-provided csd results and external evaluation JSON; no independent remote artifact inspection.",
+  "seed": 42,
+  "precision": "FP32",
+  "epochs": 5,
+  "scope": "Custom single-target tool selection; not argument generation or official leaderboard scores.",
+  "pipelines": {
+    "shared": "20260930T193456Z-c784dfbd",
+    "cross_muon": "20261001T041152Z-f417dba5",
+    "cross_adamw": "20261001T185554Z-5777fb08"
+  },
+  "metrics": [
+    {
+      "model": "Shared encoder + AdamW",
+      "dataset": "xLAM",
+      "examples": 2451,
+      "accuracy": 0.9832721338229294,
+      "mrr": 0.9912620699034407,
+      "nll": 0.0718015032246452,
+      "brier": 0.0324062891761462,
+      "ece_15_bins": 0.013286975769060898
+    },
+    {
+      "model": "Shared encoder + AdamW",
+      "dataset": "BFCL live_multiple",
+      "examples": 1052,
+      "accuracy": 0.720532319391635,
+      "mrr": 0.8415436960589052,
+      "nll": 0.745592620930406,
+      "brier": 0.38972499582909614,
+      "ece_15_bins": 0.06517840707993322
+    },
+    {
+      "model": "Cross-encoder + Muon/AdamW",
+      "dataset": "xLAM",
+      "examples": 2451,
+      "accuracy": 0.99265605875153,
+      "mrr": 0.9962600299197607,
+      "nll": 0.022497211591349795,
+      "brier": 0.011842471607644853,
+      "ece_15_bins": 0.0070999110902585875
+    },
+    {
+      "model": "Cross-encoder + Muon/AdamW",
+      "dataset": "BFCL live_multiple",
+      "examples": 1052,
+      "accuracy": 0.8963878326996197,
+      "mrr": 0.9421181875792142,
+      "nll": 0.30598521122929456,
+      "brier": 0.15761762304027185,
+      "ece_15_bins": 0.045388187858994934
+    },
+    {
+      "model": "Cross-encoder + AdamW",
+      "dataset": "xLAM",
+      "examples": 2451,
+      "accuracy": 0.9946960424316605,
+      "mrr": 0.9971440228478172,
+      "nll": 0.01503756330439385,
+      "brier": 0.008018757217139636,
+      "ece_15_bins": 0.0026006156184245222
+    },
+    {
+      "model": "Cross-encoder + AdamW",
+      "dataset": "BFCL live_multiple",
+      "examples": 1052,
+      "accuracy": 0.9363117870722434,
+      "mrr": 0.965415082382763,
+      "nll": 0.19273462145969408,
+      "brier": 0.09905912169479814,
+      "ece_15_bins": 0.015627782026964465
+    },
+    {
+      "model": "Shared encoder + AdamW",
+      "dataset": "when2call",
+      "examples": 1021,
+      "accuracy": 0.7257590597453477,
+      "mrr": 0.8448781928703575,
+      "nll": 0.7381549064416579,
+      "brier": 0.3879146462068874,
+      "ece_15_bins": 0.07162566537021077
+    },
+    {
+      "model": "Shared encoder + AdamW",
+      "dataset": "toolace",
+      "examples": 4758,
+      "accuracy": 0.7950819672131147,
+      "mrr": 0.8856737524770311,
+      "nll": 0.5594495903683985,
+      "brier": 0.2955587126210303,
+      "ece_15_bins": 0.033355906317593824
+    },
+    {
+      "model": "Cross-encoder + Muon/AdamW",
+      "dataset": "when2call",
+      "examples": 1021,
+      "accuracy": 0.8932419196865817,
+      "mrr": 0.941209598432909,
+      "nll": 0.3171930066453654,
+      "brier": 0.16386065294872346,
+      "ece_15_bins": 0.04444648278740317
+    },
+    {
+      "model": "Cross-encoder + Muon/AdamW",
+      "dataset": "toolace",
+      "examples": 4758,
+      "accuracy": 0.8980664144598571,
+      "mrr": 0.9445337676895053,
+      "nll": 0.27096539384484347,
+      "brier": 0.14558911430530463,
+      "ece_15_bins": 0.010812558023906491
+    },
+    {
+      "model": "Cross-encoder + AdamW",
+      "dataset": "when2call",
+      "examples": 1021,
+      "accuracy": 0.9392752203721841,
+      "mrr": 0.9669768201110024,
+      "nll": 0.1831546393344553,
+      "brier": 0.09494074662706162,
+      "ece_15_bins": 0.014332442249770741
+    },
+    {
+      "model": "Cross-encoder + AdamW",
+      "dataset": "toolace",
+      "examples": 4758,
+      "accuracy": 0.9081546868432114,
+      "mrr": 0.9462279068836446,
+      "nll": 0.2614228379767662,
+      "brier": 0.13203774611341063,
+      "ece_15_bins": 0.02039619390831218
+    }
+  ]
+}

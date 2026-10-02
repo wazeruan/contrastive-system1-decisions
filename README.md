@@ -131,7 +131,7 @@ Reuse the completed data while refreshing setup, model preparation and preflight
   --bfcl-job-id 22972201 --bfcl-dir data/benchmark/bfcl-003
 ```
 
-The reuse command verifies accounting and artifacts; job IDs and paths are specific to the completed Nibi experiment. Supply credentials through the launcher's supported environment mechanism when needed. This architecture/optimizer has not yet been validated on an allocated H100; use `csd status` and `csd results` to verify execution and finite metrics.
+The reuse command verifies accounting and artifacts; job IDs and paths are specific to the completed Nibi experiment. Supply credentials through the launcher's supported environment mechanism when needed. Reported completed H100 results are linked in the comparison section below; remote artifacts were not independently reinspected. Use `csd status` and `csd results` to verify any new run and its finite metrics.
 
 ## External evaluation of all three completed models
 
@@ -153,7 +153,7 @@ git pull --ff-only
 
 All three models score the same frozen examples, and external labels are never used for calibration fitting. Outputs include accuracy, MRR, NLL, Brier, ECE, candidate-count strata, per-example predictions, paired discordant counts and a Markdown comparison. Timing includes tokenization and forward scoring and is exploratory; no warmed or randomized-order latency benchmark is claimed. Each source is reported separately.
 
-Only scripts and synthetic checks have been prepared locally. Real dataset counts, metrics, and H100 execution become available after the submitted jobs finish successfully. Do not infer completion from submission acceptance or partial result files. Status prints durable receipt/accounting evidence; a failed or ambiguous launch must be inspected before retrying.
+Development used local synthetic checks; subsequently reported external H100 evaluation results, dataset counts and frozen provenance are linked in the comparison section below. Remote artifacts were not independently reinspected. New evaluation jobs still require successful completion before their results are final. Do not infer completion from submission acceptance or partial result files. Status prints durable receipt/accounting evidence; a failed or ambiguous launch must be inspected before retrying.
 
 To inspect an older external suite, add `--suite /absolute/path/to/suite` to `status` or `results`. If CPU preparation succeeded but evaluation submission stopped, reuse its frozen data explicitly:
 
@@ -164,3 +164,7 @@ To inspect an older external suite, add `--suite /absolute/path/to/suite` to `st
 ```
 
 Recovery requires the matching successful preparation receipt and `sacct COMPLETED|0:0`; evaluation checks the frozen hashes again inside its allocation. Recovery also checks prior evaluations using the same prepared directory and rejects active, successful, or unverifiable duplicates; a new comparison is allowed only after a verified terminal failure. No automatic scientific-workload retry occurs.
+
+## Three-model experiment comparison
+
+See the [comparison tables and interpretation](reports/2026-10-01-three-model-comparison.md) for all three models on xLAM, BFCL, When2Call and ToolACE. The AdamW cross-encoder reported 93.63% BFCL, 93.93% When2Call and 90.82% ToolACE tool-selection accuracy. The report distinguishes correlated datasets, single-seed evidence and exploratory timing.
